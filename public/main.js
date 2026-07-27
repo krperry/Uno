@@ -7,10 +7,12 @@ const back = new Image();
 
 const cdWidth = 240;
 const cdHeight = 360;
-const playerNameStorageKey = 'unoPlayerName';
+const playerEmailStorageKey = 'unoPlayerEmail';
+const displayNameStorageKey = 'unoDisplayName';
 
 const appState = {
   loggedIn: false,
+  accountEmail: '',
   playerName: '',
   currentTable: null,
   hand: [],
@@ -27,12 +29,20 @@ const appState = {
 
 const el = {
   authView: document.getElementById('auth-view'),
+  accountBar: document.getElementById('account-bar'),
+  accountLabel: document.getElementById('account-label'),
   lobbyView: document.getElementById('lobby-view'),
   tableView: document.getElementById('table-view'),
   gamePanel: document.getElementById('game-panel'),
-  nameInput: document.getElementById('name-input'),
+  emailInput: document.getElementById('email-input'),
+  passwordInput: document.getElementById('password-input'),
+  displayNameInput: document.getElementById('display-name-input'),
   loginBtn: document.getElementById('login-btn'),
-  clearNameBtn: document.getElementById('clear-name-btn'),
+  createAccountBtn: document.getElementById('create-account-btn'),
+  deleteAccountBtn: document.getElementById('delete-account-btn'),
+  clearSavedBtn: document.getElementById('clear-saved-btn'),
+  logoutBtn: document.getElementById('logout-btn'),
+  deleteAccountAuthBtn: document.getElementById('delete-account-auth-btn'),
   lobbySummary: document.getElementById('lobby-summary'),
   tableList: document.getElementById('table-list'),
   joinTableBtn: document.getElementById('join-table-btn'),
@@ -54,9 +64,10 @@ function init() {
   canvas.style.backgroundColor = '#10ac84';
 
   try {
-    el.nameInput.value = window.localStorage.getItem(playerNameStorageKey) || '';
+    el.emailInput.value = window.localStorage.getItem(playerEmailStorageKey) || '';
+    el.displayNameInput.value = window.localStorage.getItem(displayNameStorageKey) || '';
   } catch (error) {
-    console.warn('Unable to read saved player name', error);
+    console.warn('Unable to read saved auth fields', error);
   }
 
   bindUi();
@@ -65,7 +76,11 @@ function init() {
 
 function bindUi() {
   el.loginBtn.addEventListener('click', login);
-  el.clearNameBtn.addEventListener('click', clearSavedName);
+  el.createAccountBtn.addEventListener('click', createAccount);
+  el.deleteAccountBtn.addEventListener('click', deleteAccountFromAuthForm);
+  el.clearSavedBtn.addEventListener('click', clearSavedEmail);
+  el.logoutBtn.addEventListener('click', logout);
+  el.deleteAccountAuthBtn.addEventListener('click', deleteLoggedInAccount);
   el.refreshLobbyBtn.addEventListener('click', function () {
     socket.emit('requestLobbySnapshot');
   });
@@ -75,9 +90,21 @@ function bindUi() {
   el.leaveTableBtn.addEventListener('click', leaveTable);
   el.closeHelpBtn.addEventListener('click', closeHelpOverlay);
 
-  el.nameInput.addEventListener('keydown', function (event) {
+  el.emailInput.addEventListener('keydown', function (event) {
     if (event.key === 'Enter') {
       login();
+    }
+  });
+
+  el.passwordInput.addEventListener('keydown', function (event) {
+    if (event.key === 'Enter') {
+      login();
+    }
+  });
+
+  el.displayNameInput.addEventListener('keydown', function (event) {
+    if (event.key === 'Enter') {
+      createAccount();
     }
   });
 
@@ -95,24 +122,82 @@ function bindUi() {
 }
 
 function login() {
-  const name = (el.nameInput.value || '').trim();
-  if (!name) {
-    srSpeak('Enter a name before logging in', 'assertive');
+  const email = (el.emailInput.value || '').trim();
+  const password = el.passwordInput.value || '';
+
+  if (!email || !password) {
+    srSpeak('Enter email and password before logging in', 'assertive');
     return;
   }
 
-  socket.emit('login', { name: name });
+  socket.emit('login', {
+    email: email,
+    password: password
+  });
 }
 
-function clearSavedName() {
-  try {
-    window.localStorage.removeItem(playerNameStorageKey);
-  } catch (error) {
-    console.warn('Unable to clear saved player name', error);
+function createAccount() {
+  const email = (el.emailInput.value || '').trim();
+  const password = el.passwordInput.value || '';
+  const displayName = (el.displayNameInput.value || '').trim();
+
+  if (!email || !password || !displayName) {
+    srSpeak('Email, password, and display name are required to create an account', 'assertive');
+    return;
   }
-  el.nameInput.value = '';
-  el.nameInput.focus();
-  srSpeak('Saved name cleared', 'polite');
+
+  socket.emit('registerAccount', {
+    email: email,
+    password: password,
+    displayName: displayName
+  });
+}
+
+function clearSavedEmail() {
+  try {
+    window.localStorage.removeItem(playerEmailStorageKey);
+  } catch (error) {
+    console.warn('Unable to clear saved email', error);
+  }
+  el.emailInput.value = '';
+  el.emailInput.focus();
+  srSpeak('Saved email cleared', 'polite');
+}
+
+function logout() {
+  socket.emit('logout');
+}
+
+function deleteAccountFromAuthForm() {
+  const email = (el.emailInput.value || '').trim();
+  const password = el.passwordInput.value || '';
+
+  if (!email || !password) {
+    srSpeak('Enter email and password to delete the account', 'assertive');
+    return;
+  }
+
+  if (!window.confirm('Delete this account permanently? This frees the display name.')) {
+    return;
+  }
+
+  socket.emit('deleteAccount', {
+    email: email,
+    password: password
+  });
+}
+
+function deleteLoggedInAccount() {
+  if (!window.confirm('Delete your account permanently? This frees your display name.')) {
+    return;
+  }
+
+  const password = window.prompt('Enter your password to confirm account deletion', '');
+  if (password === null) {
+    return;
+  }
+
+  socket.emit('deleteAccount', { password: password });
 }
 
 function createTable() {
@@ -344,8 +429,13 @@ function closeHelpOverlay() {
 
 function render() {
   el.authView.classList.toggle('hidden', appState.loggedIn);
+  el.accountBar.classList.toggle('hidden', !appState.loggedIn);
   el.lobbyView.classList.toggle('hidden', !appState.loggedIn || !!appState.currentTable);
   el.tableView.classList.toggle('hidden', !appState.currentTable);
+
+  if (appState.loggedIn) {
+    el.accountLabel.textContent = 'Logged in as ' + appState.playerName + ' (' + appState.accountEmail + ')';
+  }
 
   if (appState.currentTable) {
     el.gamePanel.classList.toggle('hidden', appState.gameStatus !== 'in_game');
@@ -587,17 +677,74 @@ socket.on('loginResult', function (payload) {
   }
 
   appState.loggedIn = true;
+  appState.accountEmail = payload.email || '';
   appState.playerName = payload.name;
 
   try {
-    window.localStorage.setItem(playerNameStorageKey, payload.name);
+    if (payload.email) {
+      window.localStorage.setItem(playerEmailStorageKey, payload.email);
+    }
+    window.localStorage.setItem(displayNameStorageKey, payload.name);
   } catch (error) {
-    console.warn('Unable to save player name', error);
+    console.warn('Unable to save auth fields', error);
   }
 
+  el.passwordInput.value = '';
   socket.emit('requestLobbySnapshot');
   srSpeak('Logged in as ' + payload.name, 'assertive');
   render();
+});
+
+socket.on('logoutResult', function (payload) {
+  if (!payload || !payload.success) {
+    srSpeak(payload && payload.message ? payload.message : 'Logout failed', 'assertive');
+    return;
+  }
+
+  appState.loggedIn = false;
+  appState.accountEmail = '';
+  appState.playerName = '';
+  appState.currentTable = null;
+  appState.turn = false;
+  appState.hand = [];
+  appState.handIndex = 0;
+  appState.discard = null;
+  appState.discardChosenColor = null;
+  appState.gameStatus = 'waiting';
+  appState.isHost = false;
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  render();
+  srSpeak(payload.message || 'Logged out', 'assertive');
+});
+
+socket.on('deleteAccountResult', function (payload) {
+  if (!payload || !payload.success) {
+    srSpeak(payload && payload.message ? payload.message : 'Account deletion failed', 'assertive');
+    return;
+  }
+
+  appState.loggedIn = false;
+  appState.accountEmail = '';
+  appState.playerName = '';
+  appState.currentTable = null;
+  appState.turn = false;
+  appState.hand = [];
+  appState.handIndex = 0;
+  appState.discard = null;
+  appState.discardChosenColor = null;
+  appState.gameStatus = 'waiting';
+  appState.isHost = false;
+
+  try {
+    window.localStorage.removeItem(displayNameStorageKey);
+  } catch (error) {
+    console.warn('Unable to clear saved display name', error);
+  }
+
+  el.passwordInput.value = '';
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  render();
+  srSpeak(payload.message || 'Account deleted', 'assertive');
 });
 
 socket.on('lobbySnapshot', function (payload) {
@@ -696,6 +843,15 @@ socket.on('playResult', function (payload) {
 
 socket.on('drawResult', function (payload) {
   if (!payload) {
+    return;
+  }
+
+  if (payload.success && typeof payload.card === 'number') {
+    const drawMessage = 'You drew ' + describeCardForSpeech(payload.card);
+    const detailMessage = payload.message && payload.message.indexOf('You drew') === 0
+      ? payload.message.slice(payload.message.indexOf('.') + 1).trim()
+      : payload.message;
+    srSpeak(detailMessage ? drawMessage + '. ' + detailMessage : drawMessage, 'assertive');
     return;
   }
 

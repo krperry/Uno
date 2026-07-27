@@ -72,6 +72,13 @@ A browser-based UNO game with a Node.js + Socket.IO server, designed for both ke
 - Keyboard help dialog restores focus to game board when closed
 - Mouse/touch interactions remain active for visual play
 
+## Accounts
+
+- Players create server-stored accounts using email, password, and a display name
+- Display names are unique (case-insensitive), so `Ken` and `ken` cannot both exist
+- Players log in with email and password; gameplay still uses their display name
+- Players can delete their account, which frees the display name for reuse
+
 ## Project Structure
 
 - server.js: Socket.IO server, lobby/table management, game rules, turn enforcement

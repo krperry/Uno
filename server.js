@@ -1,4 +1,7 @@
 const express = require('express');
+const fs = require('fs');
+const path = require('path');
+const crypto = require('crypto');
 const app = express();
 const http = require('http').Server(app);
 const io = require('socket.io')(http);
@@ -6,6 +9,7 @@ const io = require('socket.io')(http);
 const port = process.env.PORT || 3000;
 const MAX_TABLE_PLAYERS = 6;
 const MIN_TABLE_PLAYERS = 2;
+const ACCOUNT_FILE_PATH = path.join(__dirname, 'data', 'accounts.json');
 
 app.use(express.static(__dirname + '/public'));
 io.on('connection', onConnection);
@@ -13,6 +17,90 @@ http.listen(port, () => console.log('listening on port ' + port));
 
 let tableSequence = 1;
 const tables = {};
+const accounts = loadAccounts();
+
+function loadAccounts() {
+  const dirPath = path.dirname(ACCOUNT_FILE_PATH);
+  if (!fs.existsSync(dirPath)) {
+    fs.mkdirSync(dirPath, { recursive: true });
+  }
+
+  if (!fs.existsSync(ACCOUNT_FILE_PATH)) {
+    const initial = { accounts: [] };
+    fs.writeFileSync(ACCOUNT_FILE_PATH, JSON.stringify(initial, null, 2));
+    return initial.accounts;
+  }
+
+  try {
+    const raw = fs.readFileSync(ACCOUNT_FILE_PATH, 'utf8');
+    const parsed = JSON.parse(raw);
+    if (!parsed || !Array.isArray(parsed.accounts)) {
+      return [];
+    }
+    return parsed.accounts;
+  } catch (error) {
+    console.error('Unable to read account database:', error);
+    return [];
+  }
+}
+
+function saveAccounts() {
+  fs.writeFileSync(ACCOUNT_FILE_PATH, JSON.stringify({ accounts: accounts }, null, 2));
+}
+
+function normalizeEmail(email) {
+  return email.trim().toLowerCase();
+}
+
+function normalizeDisplayName(name) {
+  return name.trim().toLowerCase();
+}
+
+function isValidEmail(email) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+}
+
+function hashPassword(password, saltHex) {
+  const salt = saltHex || crypto.randomBytes(16).toString('hex');
+  const hash = crypto.scryptSync(password, salt, 64).toString('hex');
+  return {
+    salt: salt,
+    hash: hash
+  };
+}
+
+function verifyPassword(password, salt, expectedHash) {
+  const candidate = crypto.scryptSync(password, salt, 64);
+  const expected = Buffer.from(expectedHash, 'hex');
+  if (candidate.length !== expected.length) {
+    return false;
+  }
+  return crypto.timingSafeEqual(candidate, expected);
+}
+
+function findAccountByEmail(normalizedEmail) {
+  return accounts.find(function (account) {
+    return account.emailLower === normalizedEmail;
+  }) || null;
+}
+
+function findAccountByDisplayName(normalizedDisplayName) {
+  return accounts.find(function (account) {
+    return account.displayNameLower === normalizedDisplayName;
+  }) || null;
+}
+
+function attachSocketToAccount(socket, account) {
+  socket.accountId = account.id;
+  socket.accountEmail = account.email;
+  socket.playerName = account.displayName;
+}
+
+function clearSocketAuth(socket) {
+  socket.accountId = null;
+  socket.accountEmail = '';
+  socket.playerName = '';
+}
 
 function createDeck() {
   const baseDeck = Array.apply(null, Array(112)).map(function (_, i) { return i; });
@@ -479,19 +567,177 @@ function validatePlayerReady(socket) {
 }
 
 function onConnection(socket) {
-  socket.playerName = '';
+  clearSocketAuth(socket);
   socket.tableId = null;
 
-  socket.on('login', function (payload) {
-    const name = payload && typeof payload.name === 'string' ? payload.name.trim() : '';
-    if (!name) {
-      socket.emit('loginResult', { success: false, message: 'Name is required' });
+  socket.on('registerAccount', function (payload) {
+    if (socket.accountId) {
+      socket.emit('loginResult', { success: false, message: 'Already logged in' });
       return;
     }
 
-    socket.playerName = name.slice(0, 32);
-    socket.emit('loginResult', { success: true, name: socket.playerName });
+    const email = payload && typeof payload.email === 'string' ? payload.email.trim() : '';
+    const password = payload && typeof payload.password === 'string' ? payload.password : '';
+    const displayName = payload && typeof payload.displayName === 'string' ? payload.displayName.trim() : '';
+
+    if (!email || !password || !displayName) {
+      socket.emit('loginResult', { success: false, message: 'Email, password, and display name are required' });
+      return;
+    }
+
+    if (!isValidEmail(email)) {
+      socket.emit('loginResult', { success: false, message: 'Enter a valid email address' });
+      return;
+    }
+
+    if (password.length < 6) {
+      socket.emit('loginResult', { success: false, message: 'Password must be at least 6 characters' });
+      return;
+    }
+
+    if (displayName.length > 32) {
+      socket.emit('loginResult', { success: false, message: 'Display name must be 32 characters or fewer' });
+      return;
+    }
+
+    const emailLower = normalizeEmail(email);
+    const displayNameLower = normalizeDisplayName(displayName);
+
+    if (findAccountByEmail(emailLower)) {
+      socket.emit('loginResult', { success: false, message: 'That email is already registered' });
+      return;
+    }
+
+    if (findAccountByDisplayName(displayNameLower)) {
+      socket.emit('loginResult', { success: false, message: 'That display name is already in use' });
+      return;
+    }
+
+    const secret = hashPassword(password);
+    const account = {
+      id: crypto.randomBytes(16).toString('hex'),
+      email: email,
+      emailLower: emailLower,
+      displayName: displayName,
+      displayNameLower: displayNameLower,
+      passwordHash: secret.hash,
+      passwordSalt: secret.salt,
+      createdAt: new Date().toISOString()
+    };
+
+    accounts.push(account);
+    saveAccounts();
+    attachSocketToAccount(socket, account);
+    socket.emit('loginResult', { success: true, name: socket.playerName, email: socket.accountEmail });
     sendLobbySnapshot(socket);
+  });
+
+  socket.on('login', function (payload) {
+    if (socket.accountId) {
+      socket.emit('loginResult', { success: false, message: 'Already logged in' });
+      return;
+    }
+
+    const email = payload && typeof payload.email === 'string' ? payload.email.trim() : '';
+    const password = payload && typeof payload.password === 'string' ? payload.password : '';
+
+    if (!email || !password) {
+      socket.emit('loginResult', { success: false, message: 'Email and password are required' });
+      return;
+    }
+
+    const emailLower = normalizeEmail(email);
+    const account = findAccountByEmail(emailLower);
+    if (!account) {
+      socket.emit('loginResult', { success: false, message: 'Invalid email or password' });
+      return;
+    }
+
+    if (!verifyPassword(password, account.passwordSalt, account.passwordHash)) {
+      socket.emit('loginResult', { success: false, message: 'Invalid email or password' });
+      return;
+    }
+
+    attachSocketToAccount(socket, account);
+    socket.emit('loginResult', { success: true, name: socket.playerName, email: socket.accountEmail });
+    sendLobbySnapshot(socket);
+  });
+
+  socket.on('logout', function () {
+    if (!validatePlayerReady(socket)) {
+      socket.emit('logoutResult', { success: false, message: 'Not logged in' });
+      return;
+    }
+
+    leaveCurrentTable(socket, 'logout');
+    clearSocketAuth(socket);
+    socket.emit('logoutResult', { success: true, message: 'Logged out' });
+  });
+
+  socket.on('deleteAccount', function (payload) {
+    if (socket.accountId) {
+      const password = payload && typeof payload.password === 'string' ? payload.password : '';
+      if (!password) {
+        socket.emit('deleteAccountResult', { success: false, message: 'Password is required to delete your account' });
+        return;
+      }
+
+      const accountIndex = accounts.findIndex(function (account) {
+        return account.id === socket.accountId;
+      });
+
+      if (accountIndex < 0) {
+        clearSocketAuth(socket);
+        socket.emit('deleteAccountResult', { success: false, message: 'Account not found' });
+        return;
+      }
+
+      const account = accounts[accountIndex];
+      if (!verifyPassword(password, account.passwordSalt, account.passwordHash)) {
+        socket.emit('deleteAccountResult', { success: false, message: 'Password is incorrect' });
+        return;
+      }
+
+      leaveCurrentTable(socket, 'account_delete');
+      accounts.splice(accountIndex, 1);
+      saveAccounts();
+      clearSocketAuth(socket);
+      socket.emit('deleteAccountResult', {
+        success: true,
+        message: 'Account deleted. Display name "' + account.displayName + '" is now available.'
+      });
+      return;
+    }
+
+    const email = payload && typeof payload.email === 'string' ? payload.email.trim() : '';
+    const password = payload && typeof payload.password === 'string' ? payload.password : '';
+
+    if (!email || !password) {
+      socket.emit('deleteAccountResult', { success: false, message: 'Email and password are required' });
+      return;
+    }
+
+    const accountIndex = accounts.findIndex(function (account) {
+      return account.emailLower === normalizeEmail(email);
+    });
+
+    if (accountIndex < 0) {
+      socket.emit('deleteAccountResult', { success: false, message: 'Invalid email or password' });
+      return;
+    }
+
+    const account = accounts[accountIndex];
+    if (!verifyPassword(password, account.passwordSalt, account.passwordHash)) {
+      socket.emit('deleteAccountResult', { success: false, message: 'Invalid email or password' });
+      return;
+    }
+
+    accounts.splice(accountIndex, 1);
+    saveAccounts();
+    socket.emit('deleteAccountResult', {
+      success: true,
+      message: 'Account deleted. Display name "' + account.displayName + '" is now available.'
+    });
   });
 
   socket.on('requestLobbySnapshot', function () {

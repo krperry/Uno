@@ -13,11 +13,25 @@
 
       <section id="auth-view" class="panel" aria-labelledby="auth-title">
         <h2 id="auth-title">Login</h2>
-        <label for="name-input">Player name</label>
-        <input id="name-input" type="text" maxlength="32" autocomplete="nickname">
+        <label for="email-input">Email</label>
+        <input id="email-input" type="email" maxlength="120" autocomplete="email">
+        <label for="password-input">Password</label>
+        <input id="password-input" type="password" maxlength="128" autocomplete="current-password">
+        <label for="display-name-input">Display name (for new accounts)</label>
+        <input id="display-name-input" type="text" maxlength="32" autocomplete="nickname">
         <div class="row">
-          <button id="login-btn" type="button">Enter Lobby</button>
-          <button id="clear-name-btn" type="button">Clear Saved Name</button>
+          <button id="login-btn" type="button">Log In</button>
+          <button id="create-account-btn" type="button">Create Account</button>
+          <button id="delete-account-btn" type="button">Delete Account</button>
+          <button id="clear-saved-btn" type="button">Clear Saved Email</button>
+        </div>
+      </section>
+
+      <section id="account-bar" class="panel hidden" aria-label="Account actions">
+        <p id="account-label"></p>
+        <div class="row">
+          <button id="logout-btn" type="button">Log Out</button>
+          <button id="delete-account-auth-btn" type="button">Delete My Account</button>
         </div>
       </section>
 
