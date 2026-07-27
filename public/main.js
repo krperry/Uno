@@ -24,7 +24,8 @@ const appState = {
   lobbyTables: [],
   gameStatus: 'waiting',
   isHost: false,
-  helpOpen: false
+  helpOpen: false,
+  pendingDrawCard: null
 };
 
 const el = {
@@ -654,6 +655,69 @@ function cardType(num) {
   }
 }
 
+function getColorSortRank(card) {
+  switch (cardColor(card)) {
+    case 'red':
+      return 0;
+    case 'yellow':
+      return 1;
+    case 'green':
+      return 2;
+    case 'blue':
+      return 3;
+    case 'black':
+      return 4;
+    default:
+      return 5;
+  }
+}
+
+function getCardKindRank(card) {
+  if (cardColor(card) === 'black') {
+    return 2;
+  }
+
+  return card % 14 <= 9 ? 0 : 1;
+}
+
+function getCardValueSortRank(card) {
+  const value = card % 14;
+  if (value <= 9) {
+    return value;
+  }
+
+  if (value === 10) {
+    return 0;
+  }
+  if (value === 11) {
+    return 1;
+  }
+  if (value === 12) {
+    return 2;
+  }
+
+  return Math.floor(card / 14) >= 4 ? 1 : 0;
+}
+
+function compareCardsForHandSort(a, b) {
+  const colorDiff = getColorSortRank(a) - getColorSortRank(b);
+  if (colorDiff !== 0) {
+    return colorDiff;
+  }
+
+  const kindDiff = getCardKindRank(a) - getCardKindRank(b);
+  if (kindDiff !== 0) {
+    return kindDiff;
+  }
+
+  const valueDiff = getCardValueSortRank(a) - getCardValueSortRank(b);
+  if (valueDiff !== 0) {
+    return valueDiff;
+  }
+
+  return a - b;
+}
+
 socket.on('connect', function () {
   srSpeak('Connected to server', 'polite');
 });
@@ -710,6 +774,7 @@ socket.on('logoutResult', function (payload) {
   appState.handIndex = 0;
   appState.discard = null;
   appState.discardChosenColor = null;
+  appState.pendingDrawCard = null;
   appState.gameStatus = 'waiting';
   appState.isHost = false;
   ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -732,6 +797,7 @@ socket.on('deleteAccountResult', function (payload) {
   appState.handIndex = 0;
   appState.discard = null;
   appState.discardChosenColor = null;
+  appState.pendingDrawCard = null;
   appState.gameStatus = 'waiting';
   appState.isHost = false;
 
@@ -774,6 +840,7 @@ socket.on('tableState', function (payload) {
     appState.handIndex = 0;
     appState.discard = null;
     appState.discardChosenColor = null;
+    appState.pendingDrawCard = null;
     ctx.clearRect(0, 0, canvas.width, canvas.height);
   }
 
@@ -781,7 +848,43 @@ socket.on('tableState', function (payload) {
 });
 
 socket.on('haveCard', function (cardsInHand) {
-  appState.hand = Array.isArray(cardsInHand) ? cardsInHand : [];
+  const previousHand = appState.hand.slice();
+  const sortedHand = Array.isArray(cardsInHand)
+    ? cardsInHand.slice().sort(compareCardsForHandSort)
+    : [];
+  appState.hand = sortedHand;
+
+  if (typeof appState.pendingDrawCard === 'number' && appState.hand.length) {
+    const oldCount = previousHand.filter(function (card) {
+      return card === appState.pendingDrawCard;
+    }).length;
+
+    let seen = 0;
+    let selectedIndex = -1;
+    for (let i = 0; i < appState.hand.length; i++) {
+      if (appState.hand[i] !== appState.pendingDrawCard) {
+        continue;
+      }
+
+      if (seen === oldCount) {
+        selectedIndex = i;
+        break;
+      }
+      seen += 1;
+    }
+
+    if (selectedIndex === -1) {
+      selectedIndex = appState.hand.indexOf(appState.pendingDrawCard);
+    }
+
+    if (selectedIndex !== -1) {
+      appState.handIndex = selectedIndex;
+    }
+    appState.pendingDrawCard = null;
+  } else {
+    appState.handIndex = Math.max(0, Math.min(appState.handIndex, Math.max(0, appState.hand.length - 1)));
+  }
+
   appState.handIndex = Math.max(0, Math.min(appState.handIndex, Math.max(0, appState.hand.length - 1)));
   drawHand();
 
@@ -847,6 +950,7 @@ socket.on('drawResult', function (payload) {
   }
 
   if (payload.success && typeof payload.card === 'number') {
+    appState.pendingDrawCard = payload.card;
     const drawMessage = 'You drew ' + describeCardForSpeech(payload.card);
     const detailMessage = payload.message && payload.message.indexOf('You drew') === 0
       ? payload.message.slice(payload.message.indexOf('.') + 1).trim()
