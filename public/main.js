@@ -1,400 +1,463 @@
-const socket = io({autoConnect: false});
+const socket = io({ autoConnect: true });
+
 const canvas = document.getElementById('canvas');
 const ctx = canvas.getContext('2d');
-
-const cdWidth = 240;
-const cdHeight = 360;
 const cards = new Image();
 const back = new Image();
 
-let room;
-let hand = [];
-let turn;
-let playerName;
-let discard;
-let discardChosenColor = null;
-let handIndex=0;
-let round=1;
-const playerNameStorageKey = 'playerName';
+const cdWidth = 240;
+const cdHeight = 360;
+const playerNameStorageKey = 'unoPlayerName';
 
-/**
- * Given a card number, returns its color
- * @function
- * @param {Number} num Number of the card position in deck
- * @return {String} Card color. Either black, red, yellow, green or blue.
- */
-function cardColor(num) {
-  let color;
-  if (num % 14 === 13) {
-    return 'black';
-  }
-  switch (Math.floor(num / 14)) {
-    case 0:
-    case 4:
-      color = 'red';
-      break;
-    case 1:
-    case 5:
-      color = 'yellow';
-      break;
-    case 2:
-    case 6:
-      color = 'green';
-      break;
-    case 3:
-    case 7:
-      color = 'blue';
-      break;
-  }
-  return color;
-}
+const appState = {
+  loggedIn: false,
+  playerName: '',
+  currentTable: null,
+  hand: [],
+  handIndex: 0,
+  turn: false,
+  discard: null,
+  discardChosenColor: null,
+  selectedLobbyIndex: 0,
+  lobbyTables: [],
+  gameStatus: 'waiting',
+  isHost: false,
+  helpOpen: false
+};
 
-/**
- * Given a card number, returns its type
- * @function
- * @param {Number} num Number of the card position in deck
- * @return {String} Card type. Either skip, reverse, draw2, draw4, wild or number.
- */
-function cardType(num) {
-  switch (num % 14) {
-    case 10: //Skip
-      return 'Skip';
-    case 11: //Reverse
-      return 'Reverse';
-    case 12: //Draw 2
-      return 'Draw2';
-    case 13: //Wild or Wild Draw 4
-      if (Math.floor(num / 14) >= 4) {
-        return 'Draw4';
-      } else {
-        return 'Wild';
-      }
-    default:
-      return 'Number ' + (num % 14);
-  }
-}
-
+const el = {
+  authView: document.getElementById('auth-view'),
+  lobbyView: document.getElementById('lobby-view'),
+  tableView: document.getElementById('table-view'),
+  gamePanel: document.getElementById('game-panel'),
+  nameInput: document.getElementById('name-input'),
+  loginBtn: document.getElementById('login-btn'),
+  clearNameBtn: document.getElementById('clear-name-btn'),
+  lobbySummary: document.getElementById('lobby-summary'),
+  tableList: document.getElementById('table-list'),
+  joinTableBtn: document.getElementById('join-table-btn'),
+  refreshLobbyBtn: document.getElementById('refresh-lobby-btn'),
+  newTableName: document.getElementById('new-table-name'),
+  createTableBtn: document.getElementById('create-table-btn'),
+  tableMeta: document.getElementById('table-meta'),
+  tableHost: document.getElementById('table-host'),
+  playerSummary: document.getElementById('player-summary'),
+  startGameBtn: document.getElementById('start-game-btn'),
+  leaveTableBtn: document.getElementById('leave-table-btn'),
+  helpOverlay: document.getElementById('help-overlay'),
+  closeHelpBtn: document.getElementById('close-help-btn')
+};
 
 function init() {
-  ctx.font = "12px Arial";
-  canvas.style.backgroundColor = '#10ac84';
   cards.src = 'images/deck.svg';
   back.src = 'images/uno.svg';
+  canvas.style.backgroundColor = '#10ac84';
 
-  playerName = getPlayerName();
-  canvas.setAttribute('aria-label', 'UNO game board for ' + playerName);
-
-  document.addEventListener('touchstart', onMouseClick, false);
-  document.addEventListener('click', onMouseClick, false);
-  canvas.addEventListener('keydown', handleKeyboardAction);
-  canvas.focus();
-
-  socket.connect();
-}
-
-function getPlayerName() {
-  let savedName = '';
   try {
-    savedName = window.sessionStorage.getItem(playerNameStorageKey) || '';
+    el.nameInput.value = window.localStorage.getItem(playerNameStorageKey) || '';
   } catch (error) {
-    console.warn('Unable to read stored player name', error);
+    console.warn('Unable to read saved player name', error);
   }
 
-  const defaultName = savedName || '';
-  let resolvedName = '';
+  bindUi();
+  render();
+}
 
-  for (let attempt = 0; attempt < 3 && !resolvedName; attempt++) {
-    const enteredName = prompt('Enter your name:', defaultName);
-    if (enteredName !== null && enteredName.trim() !== '') {
-      resolvedName = enteredName.trim();
+function bindUi() {
+  el.loginBtn.addEventListener('click', login);
+  el.clearNameBtn.addEventListener('click', clearSavedName);
+  el.refreshLobbyBtn.addEventListener('click', function () {
+    socket.emit('requestLobbySnapshot');
+  });
+  el.createTableBtn.addEventListener('click', createTable);
+  el.joinTableBtn.addEventListener('click', joinSelectedTable);
+  el.startGameBtn.addEventListener('click', startGame);
+  el.leaveTableBtn.addEventListener('click', leaveTable);
+  el.closeHelpBtn.addEventListener('click', closeHelpOverlay);
+
+  el.nameInput.addEventListener('keydown', function (event) {
+    if (event.key === 'Enter') {
+      login();
     }
+  });
+
+  el.newTableName.addEventListener('keydown', function (event) {
+    if (event.key === 'Enter') {
+      createTable();
+    }
+  });
+
+  el.tableList.addEventListener('keydown', handleLobbyListKeys);
+
+  document.addEventListener('click', onMouseClick, false);
+  document.addEventListener('touchstart', onMouseClick, false);
+  canvas.addEventListener('keydown', handleGameKeys);
+}
+
+function login() {
+  const name = (el.nameInput.value || '').trim();
+  if (!name) {
+    srSpeak('Enter a name before logging in', 'assertive');
+    return;
   }
 
-  if (!resolvedName) {
-    resolvedName = 'Player ' + Math.floor(1000 + Math.random() * 9000);
-  }
+  socket.emit('login', { name: name });
+}
 
+function clearSavedName() {
   try {
-    window.sessionStorage.setItem(playerNameStorageKey, resolvedName);
+    window.localStorage.removeItem(playerNameStorageKey);
   } catch (error) {
-    console.warn('Unable to store player name', error);
+    console.warn('Unable to clear saved player name', error);
   }
-
-  return resolvedName;
+  el.nameInput.value = '';
+  el.nameInput.focus();
+  srSpeak('Saved name cleared', 'polite');
 }
 
-socket.on('connect', requestRoom);
-socket.on('confirmLeave', requestRoom);
+function createTable() {
+  const tableName = (el.newTableName.value || '').trim();
+  if (!tableName) {
+    srSpeak('Enter a table name first', 'assertive');
+    return;
+  }
 
-function requestRoom() {
-  dialog('Waiting for a Room...');
-  socket.emit('requestRoom', playerName);
-  room = 0;
-  hand = [];
-  turn = false;
-  round = 1;
-  console.log('>> Room Request', playerName);
+  socket.emit('createTable', { name: tableName });
 }
 
-socket.on('responseRoom', function ([name, people, maxPeople]) {
-  if (name !== 'error') {
-    room = name;
-    console.log('<< Room Response', name);
-    // ctx.fillText(name, 0, 10);
-    // ctx.drawImage(back, canvas.width-cdWidth/2-60, canvas.height/2-cdHeight/4, cdWidth/2, cdHeight/2);
-    // ctx.fillText(playerName, 100, 390);
-    dialog(name + ': Waiting for Players (' + people +'/' + maxPeople + ')');
-  } else {
-    socket.disconnect();
-    alert('Rooms are full! Try again later');
+function joinSelectedTable() {
+  const selected = appState.lobbyTables[appState.selectedLobbyIndex];
+  if (!selected) {
+    srSpeak('No table selected', 'assertive');
+    return;
   }
-});
 
-socket.on('countDown', function(countDown) {
-  if (countDown > 0) {
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillStyle = 'orange';
-    ctx.fillRect(canvas.width / 2 - 10, canvas.height / 2 + 40, 21, 20);
-    ctx.fillStyle = 'black';
-    ctx.fillText(countDown, canvas.width / 2, canvas.height / 2 + 50);
-    srSpeak('Game starts in ' + countDown, 'assertive');
-  } else {
-    const width = 800;
-    const height = 250;
-    ctx.clearRect(canvas.width/2 - width/2, canvas.height/2 - height/2, width, height);
-    ctx.drawImage(back, canvas.width-cdWidth/2-60, canvas.height/2-cdHeight/4, cdWidth/2, cdHeight/2);
-    ctx.font = 'normal 15px sans-serif';
-    ctx.fillText(playerName, 100, 390);
-    srSpeak('The game is starting for ' + playerName, 'assertive');
+  socket.emit('joinTable', { tableId: selected.id });
+}
+
+function leaveTable() {
+  socket.emit('leaveTable');
+}
+
+function startGame() {
+  socket.emit('startGame');
+}
+
+function handleLobbyListKeys(event) {
+  if (appState.currentTable) {
+    return;
   }
-});
 
-socket.on('playerDisconnect', function() {
-  //ctx.clearRect(0, 0, canvas.width, canvas.height);
-  //socket.emit('leaveRoom', room);
-  console.log('<< Player disconnected', room);
-});
+  if (!appState.lobbyTables.length) {
+    return;
+  }
 
-function onMouseClick(e) {
+  if (event.key === 'ArrowDown') {
+    appState.selectedLobbyIndex = Math.min(appState.selectedLobbyIndex + 1, appState.lobbyTables.length - 1);
+    renderLobbyTables();
+    event.preventDefault();
+  } else if (event.key === 'ArrowUp') {
+    appState.selectedLobbyIndex = Math.max(appState.selectedLobbyIndex - 1, 0);
+    renderLobbyTables();
+    event.preventDefault();
+  } else if (event.key === 'Enter') {
+    joinSelectedTable();
+    event.preventDefault();
+  }
+}
 
-  // Keep keyboard input scoped to the board after any pointer interaction.
+function onMouseClick(event) {
+  if (!appState.currentTable || appState.gameStatus !== 'in_game') {
+    return;
+  }
+
+  if (appState.helpOpen) {
+    return;
+  }
+
+  if (event.target !== canvas) {
+    return;
+  }
+
   canvas.focus();
 
-  const offsetY = parseInt(window.getComputedStyle(canvas).marginTop);
-  const offsetX = parseInt(window.getComputedStyle(canvas).marginLeft);
-  const X = e.pageX - offsetX;
-  const Y = e.pageY - offsetY;
+  const pointer = event.changedTouches && event.changedTouches.length
+    ? event.changedTouches[0]
+    : event;
+  const rect = canvas.getBoundingClientRect();
+  const x = pointer.clientX - rect.left;
+  const y = pointer.clientY - rect.top;
 
-  let lastCard = (hand.length/112)*(cdWidth/3)+(canvas.width/(2+(hand.length-1)))*(hand.length)-(cdWidth/4)+cdWidth/2;
-  let initCard = 2 + (hand.length/112)*(cdWidth/3)+(canvas.width/(2+(hand.length-1)))-(cdWidth/4);
+  const hand = appState.hand;
+  const spacing = canvas.width / (2 + Math.max(0, hand.length - 1));
+  const lastCard = (hand.length / 112) * (cdWidth / 3) + spacing * hand.length - (cdWidth / 4) + (cdWidth / 2);
+  const firstCard = 2 + (hand.length / 112) * (cdWidth / 3) + spacing - (cdWidth / 4);
 
-  if (Y >= 400 && Y <= 580 && X >= initCard && X <= lastCard) {
-    for (let i = 0, pos = initCard; i < hand.length; i++, pos += canvas.width/(2+(hand.length-1))) {
-      if (X >= pos && X <= pos+canvas.width/(2+(hand.length-1))) {
-        // debugArea(pos, pos+canvas.width/(2+(hand.length-1)), 400, 580);
+  if (y >= 400 && y <= 580 && x >= firstCard && x <= lastCard) {
+    for (let i = 0, pos = firstCard; i < hand.length; i++, pos += spacing) {
+      if (x >= pos && x <= pos + spacing) {
+        appState.handIndex = i;
         emitPlayCard(hand[i]);
         return;
       }
     }
-  } else if (X >= canvas.width-cdWidth/2-60 &&  X <= canvas.width-60 &&
-    Y >= canvas.height/2-cdHeight/4 && Y <= canvas.height/2+cdHeight/4) {
-    socket.emit('drawCard', [1, room]);
+  } else if (
+    x >= canvas.width - cdWidth / 2 - 60 &&
+    x <= canvas.width - 60 &&
+    y >= canvas.height / 2 - cdHeight / 4 &&
+    y <= canvas.height / 2 + cdHeight / 4
+  ) {
+    emitDrawCard();
   }
 }
 
-socket.on('turnPlayer', function(data) {
-  const turnPlayer = typeof data === 'object' && data !== null ? data : { id: data, name: null };
-  if (turnPlayer.id === socket.id) {
-    turn = true;
-    console.log('<< Your turn');
-    arrow();
-    let turnMessage = 'Your turn' + (turnPlayer.name ? ', ' + turnPlayer.name : '');
-    if (turnPlayer.topDiscard) {
-      turnMessage += '. Top discard: ' + turnPlayer.topDiscard;
+function handleGameKeys(event) {
+  if (!appState.currentTable || appState.gameStatus !== 'in_game') {
+    if (event.key === '?') {
+      openHelpOverlay();
+      event.preventDefault();
     }
-    if (turnPlayer.mustDraw) {
-      turnMessage += '. You have no playable cards. Press T or G to draw.';
-    }
-    srSpeak(turnMessage, 'assertive');
-  } else {
-    turn = false;
-    console.log('<< Not your turn');
-    srSpeak((turnPlayer.name || 'Another player') + "'s turn", 'polite');
+    return;
   }
-});
 
-socket.on('haveCard', function(nums) {
-  hand = nums;
-  clampHandIndex();
+  const key = (event.key || '').toLowerCase();
+  let handled = false;
+  let message = '';
+
+  if (key === '?') {
+    openHelpOverlay();
+    handled = true;
+  } else if (key === 'escape' && appState.helpOpen) {
+    closeHelpOverlay();
+    handled = true;
+  } else if (appState.helpOpen) {
+    handled = true;
+  } else if (key === 'arrowleft') {
+    if (appState.hand.length) {
+      appState.handIndex = Math.max(0, appState.handIndex - 1);
+      message = getSelectedCardDescription() + ' selected';
+    } else {
+      message = 'No cards in hand';
+    }
+    handled = true;
+  } else if (key === 'arrowright') {
+    if (appState.hand.length) {
+      appState.handIndex = Math.min(appState.hand.length - 1, appState.handIndex + 1);
+      message = getSelectedCardDescription() + ' selected';
+    } else {
+      message = 'No cards in hand';
+    }
+    handled = true;
+  } else if (key === 'enter' || key === ' ') {
+    if (appState.hand.length) {
+      emitPlayCard(appState.hand[appState.handIndex]);
+    } else {
+      message = 'No cards in hand';
+    }
+    handled = true;
+  } else if (key === 'd') {
+    emitDrawCard();
+    handled = true;
+  } else if (key === 'p') {
+    socket.emit('requestDiscardCard');
+    handled = true;
+  } else if (key === 'c') {
+    message = getSelectedCardDescription();
+    handled = true;
+  } else if (key === 'h') {
+    message = appState.hand.length
+      ? appState.hand.map(function (card) { return cardType(card) + ' ' + cardColor(card); }).join(', ')
+      : 'No cards in hand';
+    handled = true;
+  }
+
+  if (handled) {
+    event.preventDefault();
+    if (message) {
+      srSpeak(message, 'assertive');
+    }
+  }
+}
+
+function emitDrawCard() {
+  if (appState.gameStatus !== 'in_game') {
+    srSpeak('Game has not started yet', 'assertive');
+    return;
+  }
+
+  if (!appState.turn) {
+    srSpeak('It is not your turn', 'assertive');
+    return;
+  }
+
+  socket.emit('drawCard');
+}
+
+function emitPlayCard(card) {
+  if (appState.gameStatus !== 'in_game') {
+    srSpeak('Game has not started yet', 'assertive');
+    return;
+  }
+
+  if (!appState.turn) {
+    srSpeak('It is not your turn', 'assertive');
+    return;
+  }
+
+  if (!appState.hand.length) {
+    srSpeak('No card selected', 'assertive');
+    return;
+  }
+
+  let chosenColor = null;
+  if (cardColor(card) === 'black') {
+    chosenColor = promptForWildColor();
+    if (!chosenColor) {
+      srSpeak('Wild color selection canceled', 'assertive');
+      return;
+    }
+  }
+
+  socket.emit('playCard', {
+    card: card,
+    chosenColor: chosenColor
+  });
+
+  srSpeak('Attempting to play ' + describeCardForSpeech(card, chosenColor), 'polite');
+}
+
+function openHelpOverlay() {
+  appState.helpOpen = true;
+  el.helpOverlay.classList.remove('hidden');
+  el.closeHelpBtn.focus();
+}
+
+function closeHelpOverlay() {
+  appState.helpOpen = false;
+  el.helpOverlay.classList.add('hidden');
+  if (appState.currentTable && appState.gameStatus === 'in_game') {
+    canvas.focus();
+  } else {
+    el.tableList.focus();
+  }
+}
+
+function render() {
+  el.authView.classList.toggle('hidden', appState.loggedIn);
+  el.lobbyView.classList.toggle('hidden', !appState.loggedIn || !!appState.currentTable);
+  el.tableView.classList.toggle('hidden', !appState.currentTable);
+
+  if (appState.currentTable) {
+    el.gamePanel.classList.toggle('hidden', appState.gameStatus !== 'in_game');
+    el.tableMeta.textContent = appState.currentTable.name + ' - ' + (appState.gameStatus === 'in_game' ? 'In game' : 'Waiting for players');
+    el.tableHost.textContent = 'Host: ' + appState.currentTable.hostName;
+    el.startGameBtn.disabled = !appState.isHost || appState.currentTable.players.length < 2 || appState.gameStatus === 'in_game';
+
+    if (appState.gameStatus === 'in_game') {
+      canvas.focus();
+    }
+  }
+
+  renderLobbyTables();
+  renderPlayerSummary();
+}
+
+function renderLobbyTables() {
+  const tables = appState.lobbyTables;
+  el.tableList.innerHTML = '';
+
+  if (!tables.length) {
+    el.lobbySummary.textContent = 'No tables yet. Create one to get started.';
+    return;
+  }
+
+  el.lobbySummary.textContent = 'Use arrow keys and Enter to join, or click with the mouse.';
+
+  tables.forEach(function (table, index) {
+    const li = document.createElement('li');
+    li.className = 'table-item' + (index === appState.selectedLobbyIndex ? ' selected' : '');
+    li.tabIndex = -1;
+    li.textContent = table.name + ' | ' + table.status + ' | ' + table.playerCount + '/' + table.maxPlayers + ' | Host: ' + table.hostName;
+    li.addEventListener('click', function () {
+      appState.selectedLobbyIndex = index;
+      renderLobbyTables();
+      socket.emit('joinTable', { tableId: table.id });
+    });
+    el.tableList.appendChild(li);
+  });
+}
+
+function renderPlayerSummary() {
+  el.playerSummary.innerHTML = '';
+
+  if (!appState.currentTable) {
+    return;
+  }
+
+  appState.currentTable.players.forEach(function (player) {
+    const li = document.createElement('li');
+    const countText = appState.gameStatus === 'in_game' ? ' - cards: ' + player.cardCount : '';
+    const hostText = player.id === appState.currentTable.hostId ? ' (host)' : '';
+    li.textContent = player.name + hostText + countText;
+    el.playerSummary.appendChild(li);
+  });
+}
+
+function announcePlayerSummary(table) {
+  if (!table || !Array.isArray(table.players) || !table.players.length) {
+    return;
+  }
+
+  const summary = table.players.map(function (player) {
+    const countText = table.status === 'in_game' ? player.cardCount + ' cards' : 'waiting';
+    return player.name + ', ' + countText;
+  }).join('. ');
+
+  srSpeak('Players: ' + summary, 'polite');
+}
+
+function drawHand() {
   ctx.clearRect(0, 400, canvas.width, canvas.height);
+
+  const hand = appState.hand;
   for (let i = 0; i < hand.length; i++) {
     ctx.drawImage(
-        cards,
-        1+cdWidth*(hand[i]%14),
-        1+cdHeight*Math.floor(hand[i]/14),
-        cdWidth,
-        cdHeight,
-        (hand.length/112)*(cdWidth/3)+(canvas.width/(2+(hand.length-1)))*(i+1)-(cdWidth/4),
-        400,
-        cdWidth/2,
-        cdHeight/2
+      cards,
+      1 + cdWidth * (hand[i] % 14),
+      1 + cdHeight * Math.floor(hand[i] / 14),
+      cdWidth,
+      cdHeight,
+      (hand.length / 112) * (cdWidth / 3) + (canvas.width / (2 + (hand.length - 1))) * (i + 1) - (cdWidth / 4),
+      400,
+      cdWidth / 2,
+      cdHeight / 2
     );
-    console.log('<< Have card', hand[i]);
   }
-  if (hand.length) {
-    srSpeak(getSelectedCardDescription() + ' selected', 'polite');
-  }
-  if (round==1){
-  let s="";
-                         for (let i =0; i<hand.length;i++){
-              s+=(cardType(hand[i])+" "+cardColor(hand[i]))+", ";
-              }
-              if (s!==""){
-                            srSpeak(s,"assertive");
-                            }else{
-                                                        srSpeak("You win!","assertive");
-                            
-                            }
-  round++;
-  }
-});
-
-socket.on('sendCard', function(payload) {
-  const cardNum = typeof payload === 'object' && payload !== null ? payload.card : payload;
-  discardChosenColor = typeof payload === 'object' && payload !== null ? payload.chosenColor || null : null;
-  discard = cardNum;
-  ctx.drawImage(cards, 1+cdWidth*(cardNum%14), 1+cdHeight*Math.floor(cardNum/14), cdWidth, cdHeight, canvas.width/2-cdWidth/4, canvas.height/2-cdHeight/4, cdWidth/2, cdHeight/2);
-  srSpeak('Discard card ' + describeCardForSpeech(cardNum, discardChosenColor), 'assertive');
-});
-
-socket.on('discardCardInfo', function(result) {
-  if (!result) {
-    srSpeak('No discard card yet', 'assertive');
-    return;
-  }
-  srSpeak(result.message, result.success ? 'polite' : 'assertive');
-});
-
-socket.on('playResult', function(result) {
-  if (!result) {
-    return;
-  }
-  srSpeak(result.message || 'Play action updated', result.success ? 'polite' : 'assertive');
-});
-
-socket.on('drawResult', function(result) {
-  if (!result) {
-    return;
-  }
-  srSpeak(result.message || 'Draw action updated', result.success ? 'polite' : 'assertive');
-});
-
-socket.on('actionNotice', function(message) {
-  if (message) {
-    srSpeak(message, 'assertive');
-  }
-});
-
-socket.on('roundSummary', function(summary) {
-  if (!summary) {
-    return;
-  }
-
-  round = 1;
-  const scoreText = (summary.scores || []).map(function(entry) {
-    return entry.name + ' ' + entry.score;
-  }).join(', ');
-
-  const roundMessage = summary.winner + ' wins the round for ' + summary.roundPoints + ' points. '
-    + 'Total ' + summary.total + ' of ' + summary.target + '. '
-    + (scoreText ? 'Scores: ' + scoreText + '.' : '')
-    + ' Next round starts soon.';
-
-  dialog('Round winner: ' + summary.winner + ' (+' + summary.roundPoints + ')');
-  srSpeak(roundMessage, 'assertive');
-});
-
-socket.on('matchWinner', function(result) {
-  if (!result) {
-    return;
-  }
-
-  round = 1;
-  const matchMessage = result.winner + ' wins the match with ' + result.total
-    + ' points. Target was ' + result.target + '. New match starts soon.';
-  dialog('Match winner: ' + result.winner);
-  srSpeak(matchMessage, 'assertive');
-});
-
-function debugArea(x1, x2, y1, y2) {
-  ctx.beginPath();
-  ctx.moveTo(0, y1);
-  ctx.lineTo(canvas.width, y1);
-  ctx.closePath();
-  ctx.stroke();
-
-  ctx.beginPath();
-  ctx.moveTo(0, y2);
-  ctx.lineTo(canvas.width, y2);
-  ctx.closePath();
-  ctx.stroke();
-
-  ctx.beginPath();
-  ctx.moveTo(x1, 0);
-  ctx.lineTo(x1, canvas.height);
-  ctx.closePath();
-  ctx.stroke();
-
-  ctx.beginPath();
-  ctx.moveTo(x2, 0);
-  ctx.lineTo(x2, canvas.height);
-  ctx.closePath();
-  ctx.stroke();
 }
 
-function chooseColor() {
-
-  let cx = canvas.width / 2;
-  let cy = canvas.height / 2;
-  let r = cdHeight / 4;
-  let colors = ['red', 'blue', 'green', 'gold'];
-
-  for(let i = 0; i < 4; i++) {
-      let startAngle = i * Math.PI / 2;
-      let endAngle = startAngle + Math.PI / 2;
-      ctx.beginPath();
-      ctx.moveTo(cx, cy);
-      ctx.arc(cx, cy, r, startAngle, endAngle);
-      ctx.closePath();
-      ctx.fillStyle = colors[i];
-      ctx.fill();
-      ctx.stroke();
+function drawDiscard(cardNum) {
+  if (typeof cardNum !== 'number') {
+    return;
   }
 
-  ctx.fillStyle = 'black';
-  ctx.textAlign = 'center';
-  ctx.fillText("Choose a color", canvas.width / 2, canvas.height / 2 - r - 10);
-    srSpeak("Choose a color","assertive");
-  ctx.textAlign = 'start';
+  ctx.drawImage(
+    cards,
+    1 + cdWidth * (cardNum % 14),
+    1 + cdHeight * Math.floor(cardNum / 14),
+    cdWidth,
+    cdHeight,
+    canvas.width / 2 - cdWidth / 4,
+    canvas.height / 2 - cdHeight / 4,
+    cdWidth / 2,
+    cdHeight / 2
+  );
 }
 
-function dialog(text) {
-  const width = 800;
-  const height = 250;
-  ctx.fillStyle = 'orange';
-  ctx.fillRect(canvas.width/2 - width/2, canvas.height/2 - height/2, width, height);
-  ctx.fillStyle = 'black';
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.font = 'normal 15px sans-serif';
-  ctx.fillText(playerName, canvas.width/2, canvas.height/2 - 50);
-  ctx.font = 'normal bold 20px sans-serif';
-  ctx.fillText(text, canvas.width/2, canvas.height/2);
-  srSpeak(playerName + '. ' + text, 'assertive');
+function drawDeckBack() {
+  ctx.drawImage(back, canvas.width - cdWidth / 2 - 60, canvas.height / 2 - cdHeight / 4, cdWidth / 2, cdHeight / 2);
 }
 
-function arrow() {
+function drawTurnArrow() {
   const x = 100;
   const y = 350;
   ctx.fillStyle = '#c0392b';
@@ -404,31 +467,16 @@ function arrow() {
   ctx.lineTo(x + 15, y + 10);
   ctx.lineTo(x, y + 30);
   ctx.fill();
-
-}
-  /* srSpeak(text, priority)
-    text: the message to be vocalised
-    priority (non mandatory): "polite" (by default) or "assertive" 
-*/
-function srSpeak(text, priority) {
-  const regionId = priority === 'assertive' ? 'sr-alert' : 'sr-status';
-  const el = document.getElementById(regionId);
-  if (!el) {
-    return;
-  }
-
-  el.textContent = '';
-  window.setTimeout(function () {
-    el.textContent = text;
-  }, 50);
 }
 
 function getSelectedCardDescription() {
-  clampHandIndex();
-  if (!hand.length || handIndex < 0 || handIndex >= hand.length) {
+  if (!appState.hand.length) {
     return 'No card selected';
   }
-  return cardType(hand[handIndex]) + ' ' + cardColor(hand[handIndex]);
+
+  const safeIndex = Math.max(0, Math.min(appState.hand.length - 1, appState.handIndex));
+  appState.handIndex = safeIndex;
+  return cardType(appState.hand[safeIndex]) + ' ' + cardColor(appState.hand[safeIndex]);
 }
 
 function describeCardForSpeech(card, forcedColor) {
@@ -461,132 +509,217 @@ function promptForWildColor() {
       return 'blue';
     }
   }
+
   return null;
 }
 
-function emitPlayCard(card) {
-  if (!hand.length) {
-    srSpeak('No card selected', 'assertive');
+function srSpeak(text, priority) {
+  const regionId = priority === 'assertive' ? 'sr-alert' : 'sr-status';
+  const region = document.getElementById(regionId);
+  if (!region) {
     return;
   }
 
-  let selectedColor = null;
-  if (cardColor(card) === 'black') {
-    selectedColor = promptForWildColor();
-    if (!selectedColor) {
-      srSpeak('Wild color selection cancelled', 'assertive');
-      return;
-    }
-  }
-
-  socket.emit('playCard', [card, room, selectedColor]);
-  srSpeak('Attempting to play ' + describeCardForSpeech(card, selectedColor), 'polite');
+  region.textContent = '';
+  window.setTimeout(function () {
+    region.textContent = text;
+  }, 40);
 }
 
-function clampHandIndex() {
-  if (!hand.length) {
-    handIndex = 0;
+function cardColor(num) {
+  if (num % 14 === 13) {
+    return 'black';
+  }
+
+  switch (Math.floor(num / 14)) {
+    case 0:
+    case 4:
+      return 'red';
+    case 1:
+    case 5:
+      return 'yellow';
+    case 2:
+    case 6:
+      return 'green';
+    case 3:
+    case 7:
+      return 'blue';
+    default:
+      return 'unknown';
+  }
+}
+
+function cardType(num) {
+  switch (num % 14) {
+    case 10:
+      return 'Skip';
+    case 11:
+      return 'Reverse';
+    case 12:
+      return 'Draw2';
+    case 13:
+      return Math.floor(num / 14) >= 4 ? 'Draw4' : 'Wild';
+    default:
+      return 'Number ' + (num % 14);
+  }
+}
+
+socket.on('connect', function () {
+  srSpeak('Connected to server', 'polite');
+});
+
+socket.on('disconnect', function () {
+  srSpeak('Disconnected from server', 'assertive');
+});
+
+socket.on('serverMessage', function (payload) {
+  if (!payload || !payload.message) {
     return;
   }
-  handIndex = Math.max(0, Math.min(hand.length - 1, handIndex));
-}
 
-function handleKeyboardAction(e) {
-  const key = (e.key || '').toLowerCase();
-  const keyCode = e.keyCode || e.which;
-  let message = '';
-  let handled = false;
+  srSpeak(payload.message, payload.type === 'error' ? 'assertive' : 'polite');
+});
 
-  switch (key) {
-    case 't':
-    case 'g':
-      socket.emit('drawCard', [1, room]);
-      message = 'Attempting to draw a card';
-      handled = true;
-      break;
-    case 'w':
-    case 'enter':
-    case ' ':
-      if (hand.length) {
-        emitPlayCard(hand[handIndex]);
-        message = '';
-      } else {
-        message = 'No card selected';
-      }
-      handled = true;
-      break;
-    case 'r':
-      if (room) {
-        socket.emit('requestDiscardCard', room);
-        message = '';
-      } else {
-        message = 'No discard card yet';
-      }
-      handled = true;
-      break;
-    case 's':
-      if (typeof discard === 'number') {
-        message = describeCardForSpeech(discard, discardChosenColor);
-      } else {
-        message = 'No discard card yet';
-      }
-      handled = true;
-      break;
-    case 'c':
-      message = getSelectedCardDescription();
-      handled = true;
-      break;
-    case 'a':
-    case 'arrowleft':
-      if (hand.length) {
-        handIndex -= 1;
-        clampHandIndex();
-        message = getSelectedCardDescription() + ' selected';
-      } else {
-        message = 'No cards in hand';
-      }
-      handled = true;
-      break;
-    case 'd':
-    case 'arrowright':
-      if (hand.length) {
-        handIndex += 1;
-        clampHandIndex();
-        message = getSelectedCardDescription() + ' selected';
-      } else {
-        message = 'No cards in hand';
-      }
-      handled = true;
-      break;
-    case 'h':
-      if (hand.length) {
-        message = hand.map(function (card) {
-          return cardType(card) + ' ' + cardColor(card);
-        }).join(', ');
-      } else {
-        message = 'No cards in hand';
-      }
-      handled = true;
-      break;
+socket.on('loginResult', function (payload) {
+  if (!payload || !payload.success) {
+    srSpeak(payload && payload.message ? payload.message : 'Login failed', 'assertive');
+    return;
   }
 
-  if (!handled && (keyCode === 37 || keyCode === 39)) {
-    if (hand.length) {
-      handIndex += keyCode === 37 ? -1 : 1;
-      clampHandIndex();
-      message = getSelectedCardDescription() + ' selected';
-    } else {
-      message = 'No cards in hand';
+  appState.loggedIn = true;
+  appState.playerName = payload.name;
+
+  try {
+    window.localStorage.setItem(playerNameStorageKey, payload.name);
+  } catch (error) {
+    console.warn('Unable to save player name', error);
+  }
+
+  socket.emit('requestLobbySnapshot');
+  srSpeak('Logged in as ' + payload.name, 'assertive');
+  render();
+});
+
+socket.on('lobbySnapshot', function (payload) {
+  const tables = payload && Array.isArray(payload.tables) ? payload.tables : [];
+  appState.lobbyTables = tables;
+  appState.selectedLobbyIndex = Math.min(appState.selectedLobbyIndex, Math.max(0, tables.length - 1));
+  renderLobbyTables();
+});
+
+socket.on('tableState', function (payload) {
+  if (!payload || !payload.table) {
+    appState.currentTable = null;
+    appState.gameStatus = 'waiting';
+    appState.turn = false;
+    render();
+    return;
+  }
+
+  appState.currentTable = payload.table;
+  appState.gameStatus = payload.table.status;
+  appState.isHost = !!payload.youAreHost;
+  announcePlayerSummary(payload.table);
+
+  if (payload.table.status !== 'in_game') {
+    appState.turn = false;
+    appState.hand = [];
+    appState.handIndex = 0;
+    appState.discard = null;
+    appState.discardChosenColor = null;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+  }
+
+  render();
+});
+
+socket.on('haveCard', function (cardsInHand) {
+  appState.hand = Array.isArray(cardsInHand) ? cardsInHand : [];
+  appState.handIndex = Math.max(0, Math.min(appState.handIndex, Math.max(0, appState.hand.length - 1)));
+  drawHand();
+
+  if (appState.hand.length) {
+    srSpeak(getSelectedCardDescription() + ' selected', 'polite');
+  }
+});
+
+socket.on('sendCard', function (payload) {
+  const card = typeof payload === 'object' && payload ? payload.card : payload;
+  const chosenColor = typeof payload === 'object' && payload ? payload.chosenColor || null : null;
+
+  appState.discard = card;
+  appState.discardChosenColor = chosenColor;
+
+  drawDiscard(card);
+  drawDeckBack();
+  srSpeak('Discard is ' + describeCardForSpeech(card, chosenColor), 'assertive');
+});
+
+socket.on('turnPlayer', function (payload) {
+  if (!payload) {
+    return;
+  }
+
+  appState.turn = payload.id === socket.id;
+
+  if (appState.turn) {
+    drawTurnArrow();
+    let msg = 'Your turn';
+    if (payload.topDiscard) {
+      msg += '. Top discard: ' + payload.topDiscard;
     }
-    handled = true;
+    if (payload.mustDraw) {
+      msg += '. You have no playable card. Press D to draw.';
+    }
+    srSpeak(msg, 'assertive');
+  } else {
+    srSpeak((payload.name || 'Another player') + ' is taking a turn', 'polite');
+  }
+});
+
+socket.on('discardCardInfo', function (payload) {
+  if (!payload) {
+    srSpeak('No discard card available', 'assertive');
+    return;
   }
 
-  if (handled) {
-    e.preventDefault();
-    if (message) {
-      srSpeak(message, 'assertive');
-    }
+  srSpeak(payload.message || 'No discard card available', payload.success ? 'polite' : 'assertive');
+});
+
+socket.on('playResult', function (payload) {
+  if (!payload) {
+    return;
   }
-}
+
+  srSpeak(payload.message || 'Play action updated', payload.success ? 'polite' : 'assertive');
+});
+
+socket.on('drawResult', function (payload) {
+  if (!payload) {
+    return;
+  }
+
+  srSpeak(payload.message || 'Draw action updated', payload.success ? 'polite' : 'assertive');
+});
+
+socket.on('actionNotice', function (message) {
+  if (!message) {
+    return;
+  }
+  srSpeak(message, 'assertive');
+});
+
+socket.on('roundSummary', function (summary) {
+  if (!summary) {
+    return;
+  }
+
+  const scoreText = (summary.scores || []).map(function (entry) {
+    return entry.name + ' ' + entry.score;
+  }).join(', ');
+
+  const msg = summary.winner + ' wins the game for ' + summary.roundPoints + ' points.' + (scoreText ? ' Scores: ' + scoreText : '');
+  srSpeak(msg, 'assertive');
+});
 
 init();
