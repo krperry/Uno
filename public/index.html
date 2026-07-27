@@ -7,7 +7,24 @@
     <title>Uno</title>
   </head>
   <body>
-    <canvas id="canvas" width="1000" height="600"></canvas>
+
+    <canvas
+      id="canvas"
+      width="1000"
+      height="600"
+      tabindex="0"
+      role="application"
+      aria-roledescription="UNO game board"
+      aria-label="UNO game board"
+      aria-keyshortcuts="ArrowLeft ArrowRight A D W T G R S C H Enter Space"
+      aria-describedby="game-help"
+    ></canvas>
+    <p id="game-help" class="visually-hidden">
+      Use the mouse or touch to select cards and the draw pile. Keyboard shortcuts are available when the game board has focus: arrow left and right to select cards, W or Enter to play, T or G to draw, and R to read the top discard card.
+    </p>
+    <div id="sr-status" class="visually-hidden" role="status" aria-live="polite" aria-atomic="true"></div>
+    <div id="sr-alert" class="visually-hidden" role="alert" aria-live="assertive" aria-atomic="true"></div>
+    <script src="./control.js"></script>
     <script src="/socket.io/socket.io.js"></script>
     <script src="/main.js"></script>
   </body>

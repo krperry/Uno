@@ -27,6 +27,11 @@ for (let i = 1; i <= numRooms; i++) {
   room['reverse'] = 0;
   room['turn'] = 0;
   room['cardOnBoard'] = 0;
+  room['chosenColor'] = null;
+  room['hasDrawn'] = false;
+  room['scores'] = {};
+  room['dealer'] = -1;
+  room['roundTimer'] = 0;
   room['people'] = 0;
   let players = [];
   for (let j = 0; j < maxPeople; j++) {
@@ -136,6 +141,161 @@ function cardScore(num) {
   return points;
 }
 
+function normalizeIndex(index, total) {
+  return ((index % total) + total) % total;
+}
+
+function getNextPlayerIndex(roomData, startIndex, steps) {
+  const direction = roomData['reverse'] === 0 ? 1 : -1;
+  return normalizeIndex(startIndex + direction * steps, roomData['people']);
+}
+
+function getCurrentBoardColor(roomData) {
+  const boardColor = cardColor(roomData['cardOnBoard']);
+  if (boardColor === 'black' && roomData['chosenColor']) {
+    return roomData['chosenColor'];
+  }
+  return boardColor;
+}
+
+function describeCard(card, chosenColor) {
+  const color = cardColor(card) === 'black' && chosenColor ? chosenColor : cardColor(card);
+  return cardType(card) + ' ' + color;
+}
+
+function canPlayCardOnBoard(roomData, card) {
+  const playedColor = cardColor(card);
+  const playedNumber = card % 14;
+  const boardNumber = roomData['cardOnBoard'] % 14;
+  const boardColor = getCurrentBoardColor(roomData);
+
+  if (playedColor === 'black') {
+    return true;
+  }
+
+  return playedColor === boardColor || playedNumber === boardNumber;
+}
+
+function hasPlayableCard(roomData, hand) {
+  return hand.some(function(card) {
+    return canPlayCardOnBoard(roomData, card);
+  });
+}
+
+function emitDiscardCard(roomName) {
+  const roomData = data[roomName];
+  io.to(roomName).emit('sendCard', {
+    card: roomData['cardOnBoard'],
+    chosenColor: roomData['chosenColor']
+  });
+}
+
+function emitTurnPlayer(roomName) {
+  const roomData = data[roomName];
+  const currentPlayerIndex = roomData['turn'];
+  const hand = roomData['players'][currentPlayerIndex]['hand'];
+  const canPlay = hasPlayableCard(roomData, hand);
+
+  io.to(roomName).emit('turnPlayer', {
+    id: roomData['players'][currentPlayerIndex]['id'],
+    name: roomData['players'][currentPlayerIndex]['name'],
+    canPlay: canPlay,
+    mustDraw: !canPlay,
+    topDiscard: describeCard(roomData['cardOnBoard'], roomData['chosenColor'])
+  });
+}
+
+function advanceTurn(roomName, steps) {
+  const roomData = data[roomName];
+  roomData['turn'] = getNextPlayerIndex(roomData, roomData['turn'], steps);
+  roomData['hasDrawn'] = false;
+}
+
+function drawCardsFromDeck(roomData, playerIndex, count) {
+  for (let i = 0; i < count; i++) {
+    const card = parseInt(roomData['deck'].shift());
+    roomData['players'][playerIndex]['hand'].push(card);
+  }
+}
+
+function calculateRoundPoints(roomData, winnerIndex) {
+  let points = 0;
+  for (let i = 0; i < roomData['people']; i++) {
+    if (i === winnerIndex) {
+      continue;
+    }
+
+    for (let j = 0; j < roomData['players'][i]['hand'].length; j++) {
+      points += cardScore(roomData['players'][i]['hand'][j]);
+    }
+  }
+  return points;
+}
+
+function getScoreboard(roomData) {
+  const scores = [];
+  for (let i = 0; i < roomData['people']; i++) {
+    const name = roomData['players'][i]['name'];
+    scores.push({
+      name: name,
+      score: roomData['scores'][name] || 0
+    });
+  }
+  scores.sort(function(a, b) {
+    return b.score - a.score;
+  });
+  return scores;
+}
+
+function resetMatchScores(roomData) {
+  roomData['scores'] = {};
+  for (let i = 0; i < roomData['people']; i++) {
+    const name = roomData['players'][i]['name'];
+    roomData['scores'][name] = 0;
+  }
+}
+
+function finishRound(roomName, winnerIndex) {
+  const roomData = data[roomName];
+  const targetScore = 500;
+  const winnerName = roomData['players'][winnerIndex]['name'];
+  const roundPoints = calculateRoundPoints(roomData, winnerIndex);
+
+  roomData['scores'][winnerName] = (roomData['scores'][winnerName] || 0) + roundPoints;
+  const winnerTotal = roomData['scores'][winnerName];
+
+  io.to(roomName).emit('roundSummary', {
+    winner: winnerName,
+    roundPoints: roundPoints,
+    total: winnerTotal,
+    target: targetScore,
+    scores: getScoreboard(roomData)
+  });
+
+  if (winnerTotal >= targetScore) {
+    io.to(roomName).emit('matchWinner', {
+      winner: winnerName,
+      total: winnerTotal,
+      target: targetScore
+    });
+    resetMatchScores(roomData);
+    roomData['dealer'] = -1;
+    io.to(roomName).emit('actionNotice', 'New match starts in 6 seconds');
+  } else {
+    io.to(roomName).emit('actionNotice', 'Next round starts in 6 seconds');
+  }
+
+  roomData['hasDrawn'] = false;
+  if (roomData['roundTimer']) {
+    clearTimeout(roomData['roundTimer']);
+  }
+
+  roomData['roundTimer'] = setTimeout(function() {
+    roomData['roundTimer'] = 0;
+    startGame(roomName);
+  }, 6000);
+}
+
 /**
  * Starts a countdown for start a game on a room
  * @function
@@ -167,15 +327,25 @@ function startGame(name) {
   if (people >= 2) {
     console.log('>> ' + name + ': Starting');
     let sockets_ids = Object.keys(io.sockets.adapter.rooms[name].sockets);
+    data[name]['people'] = people;
+
     for (let i = 0; i < people; i++) {
       data[name]['players'][i]['id'] = sockets_ids[i];
       let playerName = io.sockets.sockets[sockets_ids[i]].playerName;
       data[name]['players'][i]['name'] = playerName;
+      data[name]['players'][i]['hand'] = [];
+      if (typeof data[name]['scores'][playerName] !== 'number') {
+        data[name]['scores'][playerName] = 0;
+      }
       console.log('>> ' + name + ': ' + playerName +
                 ' (' + sockets_ids[i] + ') is Player ' + i);
     }
 
-    data[name]['people'] = people;
+    for (let i = people; i < maxPeople; i++) {
+      data[name]['players'][i]['id'] = 0;
+      data[name]['players'][i]['name'] = '';
+      data[name]['players'][i]['hand'] = [];
+    }
 
     //Shuffle a copy of a new deck
     let newDeck = [...deck];
@@ -183,22 +353,29 @@ function startGame(name) {
     data[name]['deck'] = newDeck;
     console.log('>> ' + name + ': Shuffling deck');
 
-    //Every player draws a card.
-    //Player with the highest point value is the dealer.
-    let scores = new Array(people);
-    do {
-      console.log('>> ' + name + ': Deciding dealer');
-      for (let i = 0, card = 0, score = 0; i < people; i++) {
-        card = parseInt(newDeck.shift());
-        newDeck.push(card);
-        score = cardScore(card);
-        console.log('>> ' + name + ': Player ' + i + ' draws ' + cardType(card) +
-        ' ' + cardColor(card) + ' and gets ' + score + ' points');
-        scores[i] = score;
-      }
-    } while (new Set(scores).size !== scores.length);
-    let dealer = scores.indexOf(Math.max(...scores));
-    console.log('>> ' + name + ': The dealer is Player ' + dealer);
+    let dealer;
+    if (data[name]['dealer'] < 0 || data[name]['dealer'] >= people) {
+      //Every player draws a card.
+      //Player with the highest point value is the dealer.
+      let scores = new Array(people);
+      do {
+        console.log('>> ' + name + ': Deciding dealer');
+        for (let i = 0, card = 0, score = 0; i < people; i++) {
+          card = parseInt(newDeck.shift());
+          newDeck.push(card);
+          score = cardScore(card);
+          console.log('>> ' + name + ': Player ' + i + ' draws ' + cardType(card) +
+          ' ' + cardColor(card) + ' and gets ' + score + ' points');
+          scores[i] = score;
+        }
+      } while (new Set(scores).size !== scores.length);
+      dealer = scores.indexOf(Math.max(...scores));
+      console.log('>> ' + name + ': The dealer is Player ' + dealer);
+    } else {
+      dealer = normalizeIndex(data[name]['dealer'] + 1, people);
+      console.log('>> ' + name + ': Dealer rotates to Player ' + dealer);
+    }
+    data[name]['dealer'] = dealer;
 
     //Each player is dealt 7 cards
     for (let i = 0, card = 0; i < people * 7; i++) {
@@ -222,26 +399,22 @@ function startGame(name) {
       }
     } while (true);
     data[name]['cardOnBoard'] = cardOnBoard;
+    data[name]['chosenColor'] = null;
+    data[name]['hasDrawn'] = false;
 
     data[name]['turn'] = (dealer + 1) % people;
     data[name]['reverse'] = 0;
 
     if (cardType(cardOnBoard) === 'Draw2') {
-      card = parseInt(newDeck.shift());
-      data[name]['players'][(data[name]['turn'])]['hand'].push(card);
-      console.log('>> ' + name + ': Player ' + (dealer + 1 % people) +
-                  ' draws ' + cardType(card) + ' ' + cardColor(card));
-      card = parseInt(newDeck.shift());
-      data[name]['players'][(data[name]['turn'])]['hand'].push(card);
-      console.log('>> ' + name + ': Player ' + (dealer + 1 % people) +
-                  ' draws ' + cardType(card) + ' ' + cardColor(card));
-
-      data[name]['turn'] = (dealer + 2) % people;
+      drawCardsFromDeck(data[name], data[name]['turn'], 2);
+      advanceTurn(name, 1);
     } else if (cardType(cardOnBoard) === 'Reverse') {
-      data[name]['turn'] = Math.abs(dealer - 1) % people;
       data[name]['reverse'] = 1;
+      if (people === 2) {
+        advanceTurn(name, 1);
+      }
     } else if (cardType(cardOnBoard) === 'Skip') {
-      data[name]['turn'] = (dealer + 2) % people;
+      advanceTurn(name, 1);
     }
 
     console.log('>> ' + name + ': Turn is for ' + data[name]['players'][(data[name]['turn'])]['name']);
@@ -250,8 +423,8 @@ function startGame(name) {
     for (let i = 0; i < people; i++) {
       io.to(data[name]['players'][i]['id']).emit('haveCard', data[name]['players'][i]['hand']);
     }
-    io.to(name).emit('turnPlayer', data[name]['players'][(data[name]['turn'])]['id']);
-    io.to(name).emit('sendCard', data[name]['cardOnBoard']);
+    emitDiscardCard(name);
+    emitTurnPlayer(name);
   } else {
     console.log('>> ' + name + ': Not enough people...');
   }
@@ -313,6 +486,18 @@ function onConnection(socket) {
     io.to(socket.id).emit('responseRoom', 'error');
     console.log('>> Rooms exceeded');
   });
+  
+  socket.on('requestDiscardCard', function(name) {
+    if (!data[name] || typeof data[name]['cardOnBoard'] === 'undefined') {
+      socket.emit('discardCardInfo', { success: false, message: 'No discard card yet' });
+      return;
+    }
+
+    socket.emit('discardCardInfo', {
+      success: true,
+      message: describeCard(data[name]['cardOnBoard'], data[name]['chosenColor'])
+    });
+  });
 
   /**
    * Whenever someone is performing a disconnection,
@@ -324,6 +509,10 @@ function onConnection(socket) {
     room = Object.keys(io.sockets.adapter.sids[socket.id])[1];
     if (room !== undefined) {
       clearInterval(data[room]['timeout']['id']);
+      if (data[room]['roundTimer']) {
+        clearTimeout(data[room]['roundTimer']);
+        data[room]['roundTimer'] = 0;
+      }
       io.to(room).emit('playerDisconnect', room);
       console.log('>> ' + room + ': Player ' + socket.playerName + ' ('+
                   socket.id + ') leaves the room');
@@ -340,68 +529,168 @@ function onConnection(socket) {
   });
 
   socket.on('drawCard', function(res) {
-    let numPlayer = data[res[1]]['turn'];
-    let idPlayer = data[res[1]]['players'][numPlayer]['id'];
-    let namePlayer = data[res[1]]['players']['name'];
-    let handPlayer = data[res[1]]['players'][numPlayer]['hand'];
-    let deck = data[res[1]]['deck'];
-
-    if (idPlayer === socket.id) {
-      let card = parseInt(deck.shift());
-      handPlayer.push(card);
-      io.to(idPlayer).emit('haveCard', handPlayer);
-      //deck.push(card);
-      // TODO: Check playable card
-      //Next turn
-      numPlayer = Math.abs(numPlayer + (-1) ** data[res[1]]['reverse']) % data[res[1]]['people'];
-      data[res[1]]['turn'] = numPlayer;
-      io.to(res[1]).emit('turnPlayer', data[res[1]]['players'][numPlayer]['id']);
+    if (!res || !res[1] || !data[res[1]]) {
+      socket.emit('drawResult', { success: false, message: 'Unable to draw a card right now' });
+      return;
     }
+
+    const roomName = res[1];
+    const roomData = data[roomName];
+    const numPlayer = roomData['turn'];
+    const idPlayer = roomData['players'][numPlayer]['id'];
+    const handPlayer = roomData['players'][numPlayer]['hand'];
+
+    if (idPlayer !== socket.id) {
+      socket.emit('drawResult', { success: false, message: 'It is not your turn' });
+      return;
+    }
+
+    if (roomData['hasDrawn']) {
+      socket.emit('drawResult', { success: false, message: 'You already drew this turn' });
+      return;
+    }
+
+    if (hasPlayableCard(roomData, handPlayer)) {
+      socket.emit('drawResult', {
+        success: false,
+        message: 'You already have a playable card. Play it or choose another card.'
+      });
+      return;
+    }
+
+    const card = parseInt(roomData['deck'].shift());
+    handPlayer.push(card);
+    io.to(idPlayer).emit('haveCard', handPlayer);
+
+    if (canPlayCardOnBoard(roomData, card)) {
+      roomData['hasDrawn'] = true;
+      socket.emit('drawResult', {
+        success: true,
+        card: card,
+        message: 'You drew ' + describeCard(card) + '. It is playable. You may play now.'
+      });
+      emitTurnPlayer(roomName);
+      return;
+    }
+
+    socket.emit('drawResult', {
+      success: true,
+      card: card,
+      message: 'You drew ' + describeCard(card) + '. It is not playable. Turn passes to the next player.'
+    });
+
+    advanceTurn(roomName, 1);
+    emitTurnPlayer(roomName);
   });
 
   socket.on('playCard', function(res) {
-    let numPlayer = data[res[1]]['turn'];
-    let idPlayer = data[res[1]]['players'][numPlayer]['id'];
-    let namePlayer = data[res[1]]['players']['name'];
-    let handPlayer = data[res[1]]['players'][numPlayer]['hand'];
-    let deck = data[res[1]]['deck'];
+    if (!res || !res[1] || !data[res[1]]) {
+      socket.emit('playResult', { success: false, message: 'Unable to play a card right now' });
+      return;
+    }
 
-    if (idPlayer === socket.id) {
-      let playedColor = cardColor(res[0]);
-      let playedNumber = res[0] % 14;
+    const roomName = res[1];
+    const roomData = data[roomName];
+    const numPlayer = roomData['turn'];
+    const idPlayer = roomData['players'][numPlayer]['id'];
+    const handPlayer = roomData['players'][numPlayer]['hand'];
+    const cardToPlay = parseInt(res[0]);
+    const declaredColor = typeof res[2] === 'string' ? res[2].toLowerCase() : null;
 
-      let boardColor = cardColor(data[res[1]]['cardOnBoard']);
-      let boardNumber = data[res[1]]['cardOnBoard'] % 14;
+    if (idPlayer !== socket.id) {
+      socket.emit('playResult', { success: false, message: 'It is not your turn' });
+      return;
+    }
 
-      if (playedColor === 'black' || playedColor === boardColor || playedNumber === boardNumber) {
-        // Play card
-        io.to(res[1]).emit('sendCard', res[0]);
-        data[res[1]]['cardOnBoard'] = res[0];
-        // Remove card
-        let cardPos = handPlayer.indexOf(res[0]);
-        if (cardPos > -1) {
-          handPlayer.splice(cardPos, 1);
-        }
-        io.to(idPlayer).emit('haveCard', handPlayer);
+    if (handPlayer.indexOf(cardToPlay) === -1) {
+      socket.emit('playResult', { success: false, message: 'That card is not in your hand' });
+      return;
+    }
 
-        // Next turn
-        let skip = 0;
-        if (cardType(res[0]) === 'Skip') {
-          skip += 1;
-        } else if (cardType(res[0]) === 'Reverse') {
-          data[res[1]]['reverse'] = (data[res[1]]['reverse'] + 1) % 2;
-        } else if (cardType(res[0]) === 'Draw2') {
-          skip += 1;
-          //draw2
-        } else if (cardType(res[0]) === 'Draw4') {
-          skip += 1;
-          //draw4
-        }
-        numPlayer = Math.abs(numPlayer + (-1) ** data[res[1]]['reverse'] * (1 + skip)) % data[res[1]]['people'];
-        data[res[1]]['turn'] = numPlayer;
-        io.to(res[1]).emit('turnPlayer', data[res[1]]['players'][numPlayer]['id']);
+    const isWild = cardColor(cardToPlay) === 'black';
+    if (isWild && ['red', 'yellow', 'green', 'blue'].indexOf(declaredColor) === -1) {
+      socket.emit('playResult', { success: false, message: 'Choose a valid color for your Wild card' });
+      return;
+    }
 
+    if (cardType(cardToPlay) === 'Draw4') {
+      const boardColor = getCurrentBoardColor(roomData);
+      const hasColorMatch = handPlayer.some(function(card) {
+        return card !== cardToPlay && cardColor(card) !== 'black' && cardColor(card) === boardColor;
+      });
+      if (hasColorMatch) {
+        socket.emit('playResult', {
+          success: false,
+          message: 'Draw4 can only be played when you have no card matching the current color'
+        });
+        return;
       }
     }
+
+    if (!canPlayCardOnBoard(roomData, cardToPlay)) {
+      socket.emit('playResult', {
+        success: false,
+        message: 'Cannot play ' + describeCard(cardToPlay) +
+        ' on ' + describeCard(roomData['cardOnBoard'], roomData['chosenColor'])
+      });
+      return;
+    }
+
+    // Play card
+    roomData['cardOnBoard'] = cardToPlay;
+    roomData['chosenColor'] = isWild ? declaredColor : null;
+    roomData['hasDrawn'] = false;
+
+    // Remove card
+    let cardPos = handPlayer.indexOf(cardToPlay);
+    if (cardPos > -1) {
+      handPlayer.splice(cardPos, 1);
+    }
+
+    emitDiscardCard(roomName);
+    io.to(idPlayer).emit('haveCard', handPlayer);
+
+    const playedDescription = describeCard(cardToPlay, roomData['chosenColor']);
+    socket.emit('playResult', {
+      success: true,
+      card: cardToPlay,
+      message: 'Played ' + playedDescription
+    });
+
+    if (handPlayer.length === 1) {
+      io.to(roomName).emit('actionNotice', roomData['players'][numPlayer]['name'] + ' says UNO');
+    }
+
+    if (handPlayer.length === 0) {
+      io.to(roomName).emit('actionNotice', roomData['players'][numPlayer]['name'] + ' wins the round');
+      finishRound(roomName, numPlayer);
+      return;
+    }
+
+    // Next turn
+    let turnSteps = 1;
+    if (cardType(cardToPlay) === 'Skip') {
+      turnSteps = 2;
+    } else if (cardType(cardToPlay) === 'Reverse') {
+      roomData['reverse'] = (roomData['reverse'] + 1) % 2;
+      if (roomData['people'] === 2) {
+        turnSteps = 2;
+      }
+    } else if (cardType(cardToPlay) === 'Draw2') {
+      const targetIndex = getNextPlayerIndex(roomData, numPlayer, 1);
+      drawCardsFromDeck(roomData, targetIndex, 2);
+      io.to(roomData['players'][targetIndex]['id']).emit('haveCard', roomData['players'][targetIndex]['hand']);
+      io.to(roomData['players'][targetIndex]['id']).emit('actionNotice', 'You draw 2 cards and lose your turn');
+      turnSteps = 2;
+    } else if (cardType(cardToPlay) === 'Draw4') {
+      const targetIndex = getNextPlayerIndex(roomData, numPlayer, 1);
+      drawCardsFromDeck(roomData, targetIndex, 4);
+      io.to(roomData['players'][targetIndex]['id']).emit('haveCard', roomData['players'][targetIndex]['hand']);
+      io.to(roomData['players'][targetIndex]['id']).emit('actionNotice', 'You draw 4 cards and lose your turn');
+      turnSteps = 2;
+    }
+
+    advanceTurn(roomName, turnSteps);
+    emitTurnPlayer(roomName);
   });
 }
