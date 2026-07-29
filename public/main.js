@@ -26,15 +26,16 @@ const appState = {
   isHost: false,
   helpOpen: false,
   pendingDrawCard: null,
+  handBeforeDraw: null,
   tableStatusMessage: 'Join a table to start playing.',
   tableStatusTone: 'info',
   currentTurnPlayerId: null,
   announcementTimer: null,
-  announcementOpen: false
+  announcementOpen: false,
+  speechLockUntil: 0
 };
 
-const speechQueue = [];
-let speechQueueTimer = null;
+let speechRenderTimer = null;
 
 const el = {
   authView: document.getElementById('auth-view'),
@@ -390,7 +391,7 @@ function handleGameKeys(event) {
   if (handled) {
     event.preventDefault();
     if (message) {
-      srSpeak(message, 'assertive');
+      srSpeak(message, 'assertive', { canInterruptLock: true });
     }
   }
 }
@@ -406,7 +407,41 @@ function emitDrawCard() {
     return;
   }
 
+  appState.handBeforeDraw = appState.hand.slice();
   socket.emit('drawCard');
+}
+
+function focusDrawnCard(card) {
+  if (typeof card !== 'number' || !appState.hand.length) {
+    return false;
+  }
+
+  const previousHand = Array.isArray(appState.handBeforeDraw) ? appState.handBeforeDraw : [];
+  const oldCount = previousHand.filter(function (handCard) {
+    return handCard === card;
+  }).length;
+
+  let seen = 0;
+  for (let i = 0; i < appState.hand.length; i++) {
+    if (appState.hand[i] !== card) {
+      continue;
+    }
+
+    if (seen === oldCount) {
+      appState.handIndex = i;
+      return true;
+    }
+
+    seen += 1;
+  }
+
+  const fallbackIndex = appState.hand.indexOf(card);
+  if (fallbackIndex !== -1) {
+    appState.handIndex = fallbackIndex;
+    return true;
+  }
+
+  return false;
 }
 
 function emitPlayCard(card) {
@@ -721,34 +756,34 @@ function promptForWildColor() {
   return null;
 }
 
-function srSpeak(text, priority) {
+function srSpeak(text, priority, options) {
   if (!text) {
-    return;
-  }
-
-  speechQueue.push({
-    text: text,
-    priority: priority === 'assertive' ? 'assertive' : 'polite'
-  });
-
-  if (!speechQueueTimer) {
-    flushSpeechQueue();
-  }
-}
-
-function flushSpeechQueue() {
-  const next = speechQueue.shift();
-  if (!next) {
-    speechQueueTimer = null;
     return;
   }
 
   const statusRegion = document.getElementById('sr-status');
   const alertRegion = document.getElementById('sr-alert');
-  const region = next.priority === 'assertive' ? alertRegion : statusRegion;
+  const region = priority === 'assertive' ? alertRegion : statusRegion;
+  const lockMs = options && typeof options.lockMs === 'number' ? options.lockMs : 0;
+  const canInterruptLock = !!(options && options.canInterruptLock);
+
   if (!region) {
-    flushSpeechQueue();
     return;
+  }
+
+  if (!canInterruptLock && Date.now() < appState.speechLockUntil) {
+    return;
+  }
+
+  if (lockMs > 0) {
+    appState.speechLockUntil = Date.now() + lockMs;
+  } else if (canInterruptLock) {
+    appState.speechLockUntil = 0;
+  }
+
+  if (speechRenderTimer) {
+    window.clearTimeout(speechRenderTimer);
+    speechRenderTimer = null;
   }
 
   if (statusRegion) {
@@ -758,18 +793,10 @@ function flushSpeechQueue() {
     alertRegion.textContent = '';
   }
 
-  window.setTimeout(function () {
-    region.textContent = next.text;
+  speechRenderTimer = window.setTimeout(function () {
+    region.textContent = text;
+    speechRenderTimer = null;
   }, 40);
-
-  const holdMs = Math.max(1800, Math.min(5200, next.text.length * 55));
-  speechQueueTimer = window.setTimeout(function () {
-    if (region.textContent === next.text) {
-      region.textContent = '';
-    }
-    speechQueueTimer = null;
-    flushSpeechQueue();
-  }, holdMs);
 }
 
 function cardColor(num) {
@@ -927,6 +954,7 @@ socket.on('logoutResult', function (payload) {
   appState.turn = false;
   appState.hand = [];
   appState.handIndex = 0;
+  appState.handBeforeDraw = null;
   appState.discard = null;
   appState.discardChosenColor = null;
   appState.pendingDrawCard = null;
@@ -953,6 +981,7 @@ socket.on('deleteAccountResult', function (payload) {
   appState.turn = false;
   appState.hand = [];
   appState.handIndex = 0;
+  appState.handBeforeDraw = null;
   appState.discard = null;
   appState.discardChosenColor = null;
   appState.pendingDrawCard = null;
@@ -987,6 +1016,7 @@ socket.on('tableState', function (payload) {
     appState.gameStatus = 'waiting';
     appState.turn = false;
     appState.currentTurnPlayerId = null;
+    appState.handBeforeDraw = null;
     closeAnnouncementOverlay(false);
     render();
     return;
@@ -1002,6 +1032,7 @@ socket.on('tableState', function (payload) {
     appState.currentTurnPlayerId = null;
     appState.hand = [];
     appState.handIndex = 0;
+    appState.handBeforeDraw = null;
     appState.discard = null;
     appState.discardChosenColor = null;
     appState.pendingDrawCard = null;
@@ -1059,7 +1090,7 @@ socket.on('haveCard', function (cardsInHand) {
   drawHand();
 
   if (appState.hand.length) {
-    srSpeak(getSelectedCardDescription() + ' selected', 'polite');
+    srSpeak(getSelectedCardDescription() + ' selected', 'polite', { canInterruptLock: true });
   }
 });
 
@@ -1104,11 +1135,11 @@ socket.on('turnPlayer', function (payload) {
 
 socket.on('discardCardInfo', function (payload) {
   if (!payload) {
-    srSpeak('No discard card available', 'assertive');
+    srSpeak('No discard card available', 'assertive', { canInterruptLock: true });
     return;
   }
 
-  srSpeak(payload.message || 'No discard card available', payload.success ? 'polite' : 'assertive');
+  srSpeak(payload.message || 'No discard card available', payload.success ? 'polite' : 'assertive', { canInterruptLock: true });
 });
 
 socket.on('playResult', function (payload) {
@@ -1125,15 +1156,20 @@ socket.on('drawResult', function (payload) {
   }
 
   if (payload.success && typeof payload.card === 'number') {
-    appState.pendingDrawCard = payload.card;
+    const focusedDrawnCard = focusDrawnCard(payload.card);
+    drawHand();
+
     const drawMessage = 'You drew ' + describeCardForSpeech(payload.card);
     const detailMessage = payload.message && payload.message.indexOf('You drew') === 0
       ? payload.message.slice(payload.message.indexOf('.') + 1).trim()
       : payload.message;
-    srSpeak(detailMessage ? drawMessage + '. ' + detailMessage : drawMessage, 'assertive');
+    const selectedMessage = focusedDrawnCard ? ' Selected.' : '';
+    srSpeak((detailMessage ? drawMessage + '. ' + detailMessage : drawMessage) + selectedMessage, 'assertive', { lockMs: 1800 });
+    appState.handBeforeDraw = null;
     return;
   }
 
+  appState.handBeforeDraw = null;
   srSpeak(payload.message || 'Draw action updated', payload.success ? 'polite' : 'assertive');
 });
 
@@ -1162,7 +1198,7 @@ socket.on('actionNotice', function (message) {
   }
 
   setTableStatus(message, /won the game|wins the game/i.test(message) ? 'success' : 'alert');
-  srSpeak(message, 'assertive');
+  srSpeak(message, 'assertive', /says UNO$/i.test(message) ? { lockMs: 1800 } : null);
 });
 
 socket.on('roundSummary', function (summary) {
@@ -1185,7 +1221,7 @@ socket.on('roundSummary', function (summary) {
   });
   setTableStatus(msg, 'success');
   renderPlayerSummary();
-  srSpeak(msg, 'assertive');
+  srSpeak(msg, 'assertive', { lockMs: 2200 });
 });
 
 init();
