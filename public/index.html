@@ -54,6 +54,7 @@
         <h2 id="table-title">Table</h2>
         <p id="table-meta"></p>
         <p id="table-host"></p>
+        <div id="table-status" class="table-status" aria-live="polite"></div>
         <ul id="player-summary" class="player-summary" aria-label="Players and card counts"></ul>
         <div class="row">
           <button id="start-game-btn" type="button">Start Game</button>
@@ -95,6 +96,15 @@
           <li>Escape: close this help</li>
         </ul>
         <button id="close-help-btn" type="button">Close Help</button>
+      </div>
+    </div>
+
+    <div id="announcement-overlay" class="overlay hidden" role="alertdialog" aria-modal="true" aria-labelledby="announcement-title" aria-describedby="announcement-message">
+      <div class="overlay-card announcement-card">
+        <p id="announcement-eyebrow" class="announcement-eyebrow"></p>
+        <h2 id="announcement-title"></h2>
+        <p id="announcement-message" class="announcement-message"></p>
+        <button id="close-announcement-btn" type="button">Close</button>
       </div>
     </div>
 

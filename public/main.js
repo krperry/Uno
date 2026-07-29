@@ -25,8 +25,16 @@ const appState = {
   gameStatus: 'waiting',
   isHost: false,
   helpOpen: false,
-  pendingDrawCard: null
+  pendingDrawCard: null,
+  tableStatusMessage: 'Join a table to start playing.',
+  tableStatusTone: 'info',
+  currentTurnPlayerId: null,
+  announcementTimer: null,
+  announcementOpen: false
 };
+
+const speechQueue = [];
+let speechQueueTimer = null;
 
 const el = {
   authView: document.getElementById('auth-view'),
@@ -52,12 +60,30 @@ const el = {
   createTableBtn: document.getElementById('create-table-btn'),
   tableMeta: document.getElementById('table-meta'),
   tableHost: document.getElementById('table-host'),
+  tableStatus: document.getElementById('table-status'),
   playerSummary: document.getElementById('player-summary'),
   startGameBtn: document.getElementById('start-game-btn'),
   leaveTableBtn: document.getElementById('leave-table-btn'),
   helpOverlay: document.getElementById('help-overlay'),
-  closeHelpBtn: document.getElementById('close-help-btn')
+  closeHelpBtn: document.getElementById('close-help-btn'),
+  announcementOverlay: document.getElementById('announcement-overlay'),
+  announcementEyebrow: document.getElementById('announcement-eyebrow'),
+  announcementTitle: document.getElementById('announcement-title'),
+  announcementMessage: document.getElementById('announcement-message'),
+  closeAnnouncementBtn: document.getElementById('close-announcement-btn')
 };
+
+function setTableStatus(message, tone) {
+  appState.tableStatusMessage = message || '';
+  appState.tableStatusTone = tone || 'info';
+
+  if (!el.tableStatus) {
+    return;
+  }
+
+  el.tableStatus.textContent = appState.tableStatusMessage;
+  el.tableStatus.className = 'table-status ' + appState.tableStatusTone;
+}
 
 function init() {
   cards.src = 'images/deck.svg';
@@ -90,6 +116,7 @@ function bindUi() {
   el.startGameBtn.addEventListener('click', startGame);
   el.leaveTableBtn.addEventListener('click', leaveTable);
   el.closeHelpBtn.addEventListener('click', closeHelpOverlay);
+  el.closeAnnouncementBtn.addEventListener('click', closeAnnouncementOverlay);
 
   el.emailInput.addEventListener('keydown', function (event) {
     if (event.key === 'Enter') {
@@ -313,6 +340,9 @@ function handleGameKeys(event) {
   if (key === '?') {
     openHelpOverlay();
     handled = true;
+  } else if (key === 'escape' && appState.announcementOpen) {
+    closeAnnouncementOverlay();
+    handled = true;
   } else if (key === 'escape' && appState.helpOpen) {
     closeHelpOverlay();
     handled = true;
@@ -428,6 +458,62 @@ function closeHelpOverlay() {
   }
 }
 
+function showAnnouncementOverlay(options) {
+  const title = options && options.title ? options.title : 'Announcement';
+  const message = options && options.message ? options.message : '';
+  const eyebrow = options && options.eyebrow ? options.eyebrow : '';
+  const tone = options && options.tone ? options.tone : 'info';
+  const sticky = !!(options && options.sticky);
+  const duration = options && typeof options.duration === 'number' ? options.duration : 3200;
+
+  if (!el.announcementOverlay) {
+    return;
+  }
+
+  if (appState.announcementTimer) {
+    window.clearTimeout(appState.announcementTimer);
+    appState.announcementTimer = null;
+  }
+
+  appState.announcementOpen = true;
+  el.announcementEyebrow.textContent = eyebrow;
+  el.announcementTitle.textContent = title;
+  el.announcementMessage.textContent = message;
+  el.announcementOverlay.classList.remove('hidden');
+  el.announcementTitle.parentElement.className = 'overlay-card announcement-card ' + tone;
+
+  if (sticky) {
+    el.closeAnnouncementBtn.focus();
+    return;
+  }
+
+  appState.announcementTimer = window.setTimeout(function () {
+    closeAnnouncementOverlay(false);
+  }, duration);
+}
+
+function closeAnnouncementOverlay(restoreFocus) {
+  if (!el.announcementOverlay) {
+    return;
+  }
+
+  if (appState.announcementTimer) {
+    window.clearTimeout(appState.announcementTimer);
+    appState.announcementTimer = null;
+  }
+
+  appState.announcementOpen = false;
+  el.announcementOverlay.classList.add('hidden');
+
+  if (restoreFocus === false) {
+    return;
+  }
+
+  if (appState.currentTable && appState.gameStatus === 'in_game') {
+    canvas.focus();
+  }
+}
+
 function render() {
   el.authView.classList.toggle('hidden', appState.loggedIn);
   el.accountBar.classList.toggle('hidden', !appState.loggedIn);
@@ -443,10 +529,13 @@ function render() {
     el.tableMeta.textContent = appState.currentTable.name + ' - ' + (appState.gameStatus === 'in_game' ? 'In game' : 'Waiting for players');
     el.tableHost.textContent = 'Host: ' + appState.currentTable.hostName;
     el.startGameBtn.disabled = !appState.isHost || appState.currentTable.players.length < 2 || appState.gameStatus === 'in_game';
+    setTableStatus(appState.tableStatusMessage, appState.tableStatusTone);
 
     if (appState.gameStatus === 'in_game') {
       canvas.focus();
     }
+  } else {
+    setTableStatus('Join a table to start playing.', 'info');
   }
 
   renderLobbyTables();
@@ -487,9 +576,37 @@ function renderPlayerSummary() {
 
   appState.currentTable.players.forEach(function (player) {
     const li = document.createElement('li');
-    const countText = appState.gameStatus === 'in_game' ? ' - cards: ' + player.cardCount : '';
-    const hostText = player.id === appState.currentTable.hostId ? ' (host)' : '';
-    li.textContent = player.name + hostText + countText;
+    const label = document.createElement('span');
+    const details = document.createElement('span');
+    const isCurrentTurn = appState.gameStatus === 'in_game' && player.id === appState.currentTurnPlayerId;
+    const hasUno = appState.gameStatus === 'in_game' && player.cardCount === 1;
+    const tags = [];
+
+    if (player.id === appState.currentTable.hostId) {
+      tags.push('host');
+    }
+    if (player.id === socket.id) {
+      tags.push('you');
+    }
+    if (isCurrentTurn) {
+      tags.push('current turn');
+      li.classList.add('current-turn');
+    }
+    if (hasUno) {
+      tags.push('UNO');
+      li.classList.add('uno');
+    }
+
+    const countText = appState.gameStatus === 'in_game' ? 'Cards: ' + player.cardCount : 'Waiting';
+    const tagText = tags.length ? ' (' + tags.join(', ') + ')' : '';
+
+    label.className = 'player-label';
+    label.textContent = player.name;
+    details.className = 'player-tags';
+    details.textContent = tagText + ' - ' + countText;
+
+    li.appendChild(label);
+    li.appendChild(details);
     el.playerSummary.appendChild(li);
   });
 }
@@ -605,16 +722,54 @@ function promptForWildColor() {
 }
 
 function srSpeak(text, priority) {
-  const regionId = priority === 'assertive' ? 'sr-alert' : 'sr-status';
-  const region = document.getElementById(regionId);
-  if (!region) {
+  if (!text) {
     return;
   }
 
-  region.textContent = '';
+  speechQueue.push({
+    text: text,
+    priority: priority === 'assertive' ? 'assertive' : 'polite'
+  });
+
+  if (!speechQueueTimer) {
+    flushSpeechQueue();
+  }
+}
+
+function flushSpeechQueue() {
+  const next = speechQueue.shift();
+  if (!next) {
+    speechQueueTimer = null;
+    return;
+  }
+
+  const statusRegion = document.getElementById('sr-status');
+  const alertRegion = document.getElementById('sr-alert');
+  const region = next.priority === 'assertive' ? alertRegion : statusRegion;
+  if (!region) {
+    flushSpeechQueue();
+    return;
+  }
+
+  if (statusRegion) {
+    statusRegion.textContent = '';
+  }
+  if (alertRegion) {
+    alertRegion.textContent = '';
+  }
+
   window.setTimeout(function () {
-    region.textContent = text;
+    region.textContent = next.text;
   }, 40);
+
+  const holdMs = Math.max(1800, Math.min(5200, next.text.length * 55));
+  speechQueueTimer = window.setTimeout(function () {
+    if (region.textContent === next.text) {
+      region.textContent = '';
+    }
+    speechQueueTimer = null;
+    flushSpeechQueue();
+  }, holdMs);
 }
 
 function cardColor(num) {
@@ -777,7 +932,10 @@ socket.on('logoutResult', function (payload) {
   appState.pendingDrawCard = null;
   appState.gameStatus = 'waiting';
   appState.isHost = false;
+  appState.currentTurnPlayerId = null;
   ctx.clearRect(0, 0, canvas.width, canvas.height);
+  closeAnnouncementOverlay(false);
+  setTableStatus('Join a table to start playing.', 'info');
   render();
   srSpeak(payload.message || 'Logged out', 'assertive');
 });
@@ -800,6 +958,7 @@ socket.on('deleteAccountResult', function (payload) {
   appState.pendingDrawCard = null;
   appState.gameStatus = 'waiting';
   appState.isHost = false;
+  appState.currentTurnPlayerId = null;
 
   try {
     window.localStorage.removeItem(displayNameStorageKey);
@@ -809,6 +968,8 @@ socket.on('deleteAccountResult', function (payload) {
 
   el.passwordInput.value = '';
   ctx.clearRect(0, 0, canvas.width, canvas.height);
+  closeAnnouncementOverlay(false);
+  setTableStatus('Join a table to start playing.', 'info');
   render();
   srSpeak(payload.message || 'Account deleted', 'assertive');
 });
@@ -825,6 +986,8 @@ socket.on('tableState', function (payload) {
     appState.currentTable = null;
     appState.gameStatus = 'waiting';
     appState.turn = false;
+    appState.currentTurnPlayerId = null;
+    closeAnnouncementOverlay(false);
     render();
     return;
   }
@@ -836,12 +999,19 @@ socket.on('tableState', function (payload) {
 
   if (payload.table.status !== 'in_game') {
     appState.turn = false;
+    appState.currentTurnPlayerId = null;
     appState.hand = [];
     appState.handIndex = 0;
     appState.discard = null;
     appState.discardChosenColor = null;
     appState.pendingDrawCard = null;
     ctx.clearRect(0, 0, canvas.width, canvas.height);
+    if (!appState.tableStatusMessage || appState.tableStatusTone !== 'success') {
+      setTableStatus('Waiting for the host to start the next game.', 'info');
+    }
+  } else if (!appState.currentTurnPlayerId) {
+    closeAnnouncementOverlay(false);
+    setTableStatus('Game in progress. Waiting for the next turn update.', 'info');
   }
 
   render();
@@ -910,6 +1080,7 @@ socket.on('turnPlayer', function (payload) {
     return;
   }
 
+  appState.currentTurnPlayerId = payload.id;
   appState.turn = payload.id === socket.id;
 
   if (appState.turn) {
@@ -921,10 +1092,14 @@ socket.on('turnPlayer', function (payload) {
     if (payload.mustDraw) {
       msg += '. You have no playable card. Press D to draw.';
     }
+    setTableStatus(msg, 'alert');
     srSpeak(msg, 'assertive');
   } else {
+    setTableStatus((payload.name || 'Another player') + "'s turn.", 'info');
     srSpeak((payload.name || 'Another player') + ' is taking a turn', 'polite');
   }
+
+  renderPlayerSummary();
 });
 
 socket.on('discardCardInfo', function (payload) {
@@ -966,6 +1141,27 @@ socket.on('actionNotice', function (message) {
   if (!message) {
     return;
   }
+
+  if (/says UNO$/i.test(message)) {
+    showAnnouncementOverlay({
+      eyebrow: 'UNO',
+      title: message,
+      message: 'A player is down to one card.',
+      tone: 'uno',
+      sticky: false,
+      duration: 3600
+    });
+  } else if (/won the game/i.test(message)) {
+    showAnnouncementOverlay({
+      eyebrow: 'Round Winner',
+      title: 'Game Over',
+      message: message,
+      tone: 'winner',
+      sticky: true
+    });
+  }
+
+  setTableStatus(message, /won the game|wins the game/i.test(message) ? 'success' : 'alert');
   srSpeak(message, 'assertive');
 });
 
@@ -979,6 +1175,16 @@ socket.on('roundSummary', function (summary) {
   }).join(', ');
 
   const msg = summary.winner + ' wins the game for ' + summary.roundPoints + ' points.' + (scoreText ? ' Scores: ' + scoreText : '');
+  appState.currentTurnPlayerId = null;
+  showAnnouncementOverlay({
+    eyebrow: 'Round Winner',
+    title: summary.winner + ' won the round',
+    message: msg,
+    tone: 'winner',
+    sticky: true
+  });
+  setTableStatus(msg, 'success');
+  renderPlayerSummary();
   srSpeak(msg, 'assertive');
 });
 
