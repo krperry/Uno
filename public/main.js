@@ -9,11 +9,23 @@ const cdWidth = 240;
 const cdHeight = 360;
 const playerEmailStorageKey = 'unoPlayerEmail';
 const displayNameStorageKey = 'unoDisplayName';
+const rememberTokenStorageKey = 'unoRememberToken';
+
+const GAME_CATALOG = {
+  uno: { type: 'uno', name: 'UNO', playable: true, description: 'Join a live UNO table.' },
+  hearts: { type: 'hearts', name: 'Hearts', playable: false, description: 'Hearts is not implemented yet.' },
+  spades: { type: 'spades', name: 'Spades', playable: false, description: 'Spades is not implemented yet.' },
+  cribbage: { type: 'cribbage', name: 'Cribbage', playable: false, description: 'Cribbage is not implemented yet.' }
+};
 
 const appState = {
   loggedIn: false,
   accountEmail: '',
   playerName: '',
+  currentScreen: 'auth',
+  selectedGameType: null,
+  selectedGameName: '',
+  resumeLoginPending: false,
   currentTable: null,
   hand: [],
   handIndex: 0,
@@ -30,6 +42,12 @@ const appState = {
   tableStatusMessage: 'Join a table to start playing.',
   tableStatusTone: 'info',
   currentTurnPlayerId: null,
+  currentTurnPlayerName: '',
+  currentTurnTopDiscard: '',
+  currentTurnMustDraw: false,
+  currentRoundNumber: 1,
+  currentStartingPlayerName: '',
+  currentTurnAnnouncement: '',
   announcementTimer: null,
   announcementOpen: false,
   speechLockUntil: 0
@@ -39,6 +57,8 @@ let speechRenderTimer = null;
 
 const el = {
   authView: document.getElementById('auth-view'),
+  gamePickerView: document.getElementById('game-picker-view'),
+  placeholderView: document.getElementById('placeholder-view'),
   accountBar: document.getElementById('account-bar'),
   accountLabel: document.getElementById('account-label'),
   lobbyView: document.getElementById('lobby-view'),
@@ -47,6 +67,7 @@ const el = {
   emailInput: document.getElementById('email-input'),
   passwordInput: document.getElementById('password-input'),
   displayNameInput: document.getElementById('display-name-input'),
+  rememberMeInput: document.getElementById('remember-me-input'),
   loginBtn: document.getElementById('login-btn'),
   createAccountBtn: document.getElementById('create-account-btn'),
   deleteAccountBtn: document.getElementById('delete-account-btn'),
@@ -65,6 +86,15 @@ const el = {
   playerSummary: document.getElementById('player-summary'),
   startGameBtn: document.getElementById('start-game-btn'),
   leaveTableBtn: document.getElementById('leave-table-btn'),
+  gamePickerSummary: document.getElementById('game-picker-summary'),
+  placeholderTitle: document.getElementById('placeholder-title'),
+  placeholderMessage: document.getElementById('placeholder-message'),
+  placeholderBackBtn: document.getElementById('placeholder-back-btn'),
+  placeholderUnoBtn: document.getElementById('placeholder-uno-btn'),
+  selectUnoBtn: document.getElementById('select-uno-btn'),
+  selectHeartsBtn: document.getElementById('select-hearts-btn'),
+  selectSpadesBtn: document.getElementById('select-spades-btn'),
+  selectCribbageBtn: document.getElementById('select-cribbage-btn'),
   helpOverlay: document.getElementById('help-overlay'),
   closeHelpBtn: document.getElementById('close-help-btn'),
   announcementOverlay: document.getElementById('announcement-overlay'),
@@ -86,6 +116,152 @@ function setTableStatus(message, tone) {
   el.tableStatus.className = 'table-status ' + appState.tableStatusTone;
 }
 
+function getGameDefinition(gameType) {
+  return GAME_CATALOG[gameType] || null;
+}
+
+function setScreen(screen) {
+  appState.currentScreen = screen;
+  render();
+}
+
+function updateCurrentTurnAnnouncement(payload) {
+  const roundLabel = payload && payload.turnNumber ? 'Round ' + payload.turnNumber + '. ' : '';
+  const starterLabel = payload && payload.startingPlayer ? 'Starting player: ' + payload.startingPlayer + '. ' : '';
+  const turnLabel = payload && payload.name ? (payload.id === socket.id ? 'Your turn' : payload.name + '\'s turn') : 'No active turn';
+  const discardLabel = payload && payload.topDiscard ? '. Top discard: ' + payload.topDiscard : '';
+  const drawLabel = payload && payload.mustDraw ? '. You have no playable card. Press D to draw.' : '';
+
+  appState.currentTurnAnnouncement = roundLabel + starterLabel + turnLabel + discardLabel + drawLabel;
+  appState.currentTurnPlayerName = payload && payload.name ? payload.name : '';
+  appState.currentTurnTopDiscard = payload && payload.topDiscard ? payload.topDiscard : '';
+  appState.currentTurnMustDraw = !!(payload && payload.mustDraw);
+  appState.currentRoundNumber = payload && payload.turnNumber ? payload.turnNumber : appState.currentRoundNumber;
+  appState.currentStartingPlayerName = payload && payload.startingPlayer ? payload.startingPlayer : appState.currentStartingPlayerName;
+}
+
+function speakCurrentTurn() {
+  if (appState.currentTurnAnnouncement) {
+    srSpeak(appState.currentTurnAnnouncement, 'assertive', { canInterruptLock: true });
+  } else {
+    srSpeak('No active turn announcement', 'assertive', { canInterruptLock: true });
+  }
+}
+
+function clearRememberedLogin() {
+  try {
+    window.localStorage.removeItem(rememberTokenStorageKey);
+  } catch (error) {
+    console.warn('Unable to clear remembered login', error);
+  }
+}
+
+function storeRememberedLogin(token) {
+  try {
+    if (token) {
+      window.localStorage.setItem(rememberTokenStorageKey, token);
+    } else {
+      window.localStorage.removeItem(rememberTokenStorageKey);
+    }
+  } catch (error) {
+    console.warn('Unable to store remembered login', error);
+  }
+}
+
+function attemptResumeLogin() {
+  if (appState.loggedIn || appState.resumeLoginPending) {
+    return;
+  }
+
+  let token = '';
+  try {
+    token = window.localStorage.getItem(rememberTokenStorageKey) || '';
+  } catch (error) {
+    console.warn('Unable to read remembered login', error);
+    return;
+  }
+
+  if (!token) {
+    return;
+  }
+
+  appState.resumeLoginPending = true;
+  socket.emit('resumeLogin', { token: token });
+}
+
+function resetLoggedInState() {
+  appState.loggedIn = false;
+  appState.accountEmail = '';
+  appState.playerName = '';
+  appState.currentTable = null;
+  appState.turn = false;
+  appState.hand = [];
+  appState.handIndex = 0;
+  appState.handBeforeDraw = null;
+  appState.discard = null;
+  appState.discardChosenColor = null;
+  appState.pendingDrawCard = null;
+  appState.gameStatus = 'waiting';
+  appState.isHost = false;
+  appState.currentTurnPlayerId = null;
+}
+
+function showGamePicker() {
+  appState.selectedGameType = null;
+  appState.selectedGameName = '';
+  appState.currentTable = null;
+  setScreen('game-picker');
+  window.setTimeout(function () {
+    if (el.selectUnoBtn) {
+      el.selectUnoBtn.focus();
+    }
+  }, 0);
+}
+
+function openGamePlaceholder(gameType) {
+  const gameDefinition = getGameDefinition(gameType);
+  if (!gameDefinition) {
+    return;
+  }
+
+  appState.selectedGameType = gameDefinition.type;
+  appState.selectedGameName = gameDefinition.name;
+  appState.currentTable = null;
+  setScreen('placeholder');
+  if (el.placeholderTitle) {
+    el.placeholderTitle.textContent = gameDefinition.name;
+  }
+  if (el.placeholderMessage) {
+    el.placeholderMessage.textContent = gameDefinition.description + ' UNO is the only playable game right now.';
+  }
+  window.setTimeout(function () {
+    if (el.placeholderBackBtn) {
+      el.placeholderBackBtn.focus();
+    }
+  }, 0);
+}
+
+function selectGame(gameType) {
+  const gameDefinition = getGameDefinition(gameType);
+  if (!gameDefinition) {
+    srSpeak('That game is not available', 'assertive');
+    return;
+  }
+
+  if (!gameDefinition.playable) {
+    openGamePlaceholder(gameDefinition.type);
+    srSpeak(gameDefinition.name + ' is not implemented yet', 'assertive');
+    return;
+  }
+
+  appState.selectedGameType = gameDefinition.type;
+  appState.selectedGameName = gameDefinition.name;
+  appState.currentTable = null;
+  setScreen('lobby');
+  socket.emit('requestLobbySnapshot');
+  srSpeak('Selected ' + gameDefinition.name, 'polite');
+}
+
 function init() {
   cards.src = 'images/deck.svg';
   back.src = 'images/uno.svg';
@@ -99,6 +275,9 @@ function init() {
   }
 
   bindUi();
+  if (socket.connected) {
+    attemptResumeLogin();
+  }
   render();
 }
 
@@ -116,6 +295,24 @@ function bindUi() {
   el.joinTableBtn.addEventListener('click', joinSelectedTable);
   el.startGameBtn.addEventListener('click', startGame);
   el.leaveTableBtn.addEventListener('click', leaveTable);
+  el.placeholderBackBtn.addEventListener('click', function () {
+    showGamePicker();
+  });
+  el.placeholderUnoBtn.addEventListener('click', function () {
+    selectGame('uno');
+  });
+  el.selectUnoBtn.addEventListener('click', function () {
+    selectGame('uno');
+  });
+  el.selectHeartsBtn.addEventListener('click', function () {
+    selectGame('hearts');
+  });
+  el.selectSpadesBtn.addEventListener('click', function () {
+    selectGame('spades');
+  });
+  el.selectCribbageBtn.addEventListener('click', function () {
+    selectGame('cribbage');
+  });
   el.closeHelpBtn.addEventListener('click', closeHelpOverlay);
   el.closeAnnouncementBtn.addEventListener('click', closeAnnouncementOverlay);
 
@@ -161,7 +358,8 @@ function login() {
 
   socket.emit('login', {
     email: email,
-    password: password
+    password: password,
+    rememberMe: !!(el.rememberMeInput && el.rememberMeInput.checked)
   });
 }
 
@@ -178,7 +376,8 @@ function createAccount() {
   socket.emit('registerAccount', {
     email: email,
     password: password,
-    displayName: displayName
+    displayName: displayName,
+    rememberMe: !!(el.rememberMeInput && el.rememberMeInput.checked)
   });
 }
 
@@ -236,11 +435,21 @@ function createTable() {
     return;
   }
 
-  socket.emit('createTable', { name: tableName });
+  const selectedGameType = appState.selectedGameType || 'uno';
+  const selectedGame = getGameDefinition(selectedGameType);
+  if (!selectedGame || !selectedGame.playable) {
+    srSpeak('Select UNO to create a playable table', 'assertive');
+    return;
+  }
+
+  socket.emit('createTable', { name: tableName, gameType: selectedGame.type });
 }
 
 function joinSelectedTable() {
-  const selected = appState.lobbyTables[appState.selectedLobbyIndex];
+  const tables = appState.lobbyTables.filter(function (table) {
+    return !appState.selectedGameType || table.gameType === appState.selectedGameType;
+  });
+  const selected = tables[appState.selectedLobbyIndex];
   if (!selected) {
     srSpeak('No table selected', 'assertive');
     return;
@@ -262,12 +471,16 @@ function handleLobbyListKeys(event) {
     return;
   }
 
-  if (!appState.lobbyTables.length) {
+  const tables = appState.lobbyTables.filter(function (table) {
+    return !appState.selectedGameType || table.gameType === appState.selectedGameType;
+  });
+
+  if (!tables.length) {
     return;
   }
 
   if (event.key === 'ArrowDown') {
-    appState.selectedLobbyIndex = Math.min(appState.selectedLobbyIndex + 1, appState.lobbyTables.length - 1);
+    appState.selectedLobbyIndex = Math.min(appState.selectedLobbyIndex + 1, tables.length - 1);
     renderLobbyTables();
     event.preventDefault();
   } else if (event.key === 'ArrowUp') {
@@ -352,6 +565,7 @@ function handleGameKeys(event) {
   } else if (key === 'arrowleft') {
     if (appState.hand.length) {
       appState.handIndex = Math.max(0, appState.handIndex - 1);
+      drawHand();
       message = getSelectedCardDescription() + ' selected';
     } else {
       message = 'No cards in hand';
@@ -360,6 +574,7 @@ function handleGameKeys(event) {
   } else if (key === 'arrowright') {
     if (appState.hand.length) {
       appState.handIndex = Math.min(appState.hand.length - 1, appState.handIndex + 1);
+      drawHand();
       message = getSelectedCardDescription() + ' selected';
     } else {
       message = 'No cards in hand';
@@ -374,6 +589,9 @@ function handleGameKeys(event) {
     handled = true;
   } else if (key === 'd') {
     emitDrawCard();
+    handled = true;
+  } else if (key === 't') {
+    speakCurrentTurn();
     handled = true;
   } else if (key === 'p') {
     socket.emit('requestDiscardCard');
@@ -551,17 +769,25 @@ function closeAnnouncementOverlay(restoreFocus) {
 
 function render() {
   el.authView.classList.toggle('hidden', appState.loggedIn);
+  el.gamePickerView.classList.toggle('hidden', !appState.loggedIn || appState.currentScreen !== 'game-picker');
+  el.placeholderView.classList.toggle('hidden', !appState.loggedIn || appState.currentScreen !== 'placeholder');
   el.accountBar.classList.toggle('hidden', !appState.loggedIn);
-  el.lobbyView.classList.toggle('hidden', !appState.loggedIn || !!appState.currentTable);
+  el.lobbyView.classList.toggle('hidden', !appState.loggedIn || appState.currentScreen !== 'lobby' || !!appState.currentTable);
   el.tableView.classList.toggle('hidden', !appState.currentTable);
 
   if (appState.loggedIn) {
     el.accountLabel.textContent = 'Logged in as ' + appState.playerName + ' (' + appState.accountEmail + ')';
   }
 
+  if (el.gamePickerSummary) {
+    el.gamePickerSummary.textContent = appState.selectedGameType
+      ? 'Selected game: ' + (getGameDefinition(appState.selectedGameType) || { name: 'UNO' }).name
+      : 'Pick a card game to continue. UNO is available now; the others are accessible previews for later work.';
+  }
+
   if (appState.currentTable) {
     el.gamePanel.classList.toggle('hidden', appState.gameStatus !== 'in_game');
-    el.tableMeta.textContent = appState.currentTable.name + ' - ' + (appState.gameStatus === 'in_game' ? 'In game' : 'Waiting for players');
+    el.tableMeta.textContent = (appState.currentTable.gameName || 'UNO') + ': ' + appState.currentTable.name + ' - ' + (appState.gameStatus === 'in_game' ? 'In game' : 'Waiting for players');
     el.tableHost.textContent = 'Host: ' + appState.currentTable.hostName;
     el.startGameBtn.disabled = !appState.isHost || appState.currentTable.players.length < 2 || appState.gameStatus === 'in_game';
     setTableStatus(appState.tableStatusMessage, appState.tableStatusTone);
@@ -578,21 +804,29 @@ function render() {
 }
 
 function renderLobbyTables() {
-  const tables = appState.lobbyTables;
+  const tables = appState.lobbyTables.filter(function (table) {
+    return !appState.selectedGameType || table.gameType === appState.selectedGameType;
+  });
   el.tableList.innerHTML = '';
 
+  if (appState.selectedLobbyIndex >= tables.length) {
+    appState.selectedLobbyIndex = Math.max(0, tables.length - 1);
+  }
+
   if (!tables.length) {
-    el.lobbySummary.textContent = 'No tables yet. Create one to get started.';
+    const selectedGame = getGameDefinition(appState.selectedGameType || 'uno') || GAME_CATALOG.uno;
+    el.lobbySummary.textContent = 'No ' + selectedGame.name + ' tables yet. Create one to get started.';
     return;
   }
 
-  el.lobbySummary.textContent = 'Use arrow keys and Enter to join, or click with the mouse.';
+  const selectedGame = getGameDefinition(appState.selectedGameType || 'uno') || GAME_CATALOG.uno;
+  el.lobbySummary.textContent = 'Use arrow keys and Enter to join a ' + selectedGame.name + ' table, or click with the mouse.';
 
   tables.forEach(function (table, index) {
     const li = document.createElement('li');
     li.className = 'table-item' + (index === appState.selectedLobbyIndex ? ' selected' : '');
     li.tabIndex = -1;
-    li.textContent = table.name + ' | ' + table.status + ' | ' + table.playerCount + '/' + table.maxPlayers + ' | Host: ' + table.hostName;
+    li.textContent = (table.gameName || 'UNO') + ' | ' + table.name + ' | ' + table.status + ' | ' + table.playerCount + '/' + table.maxPlayers + ' | Host: ' + table.hostName;
     li.addEventListener('click', function () {
       appState.selectedLobbyIndex = index;
       renderLobbyTables();
@@ -616,6 +850,8 @@ function renderPlayerSummary() {
     const isCurrentTurn = appState.gameStatus === 'in_game' && player.id === appState.currentTurnPlayerId;
     const hasUno = appState.gameStatus === 'in_game' && player.cardCount === 1;
     const tags = [];
+    const roundPoints = typeof player.roundPoints === 'number' ? player.roundPoints : 0;
+    const totalPoints = typeof player.score === 'number' ? player.score : 0;
 
     if (player.id === appState.currentTable.hostId) {
       tags.push('host');
@@ -632,7 +868,9 @@ function renderPlayerSummary() {
       li.classList.add('uno');
     }
 
-    const countText = appState.gameStatus === 'in_game' ? 'Cards: ' + player.cardCount : 'Waiting';
+    const countText = appState.gameStatus === 'in_game'
+      ? 'Cards: ' + player.cardCount + ' | Round: ' + roundPoints + ' | Total: ' + totalPoints
+      : 'Score: ' + totalPoints;
     const tagText = tags.length ? ' (' + tags.join(', ') + ')' : '';
 
     label.className = 'player-label';
@@ -663,18 +901,32 @@ function drawHand() {
   ctx.clearRect(0, 400, canvas.width, canvas.height);
 
   const hand = appState.hand;
+  const selectedIndex = hand.length ? Math.max(0, Math.min(hand.length - 1, appState.handIndex)) : -1;
   for (let i = 0; i < hand.length; i++) {
+    const x = (hand.length / 112) * (cdWidth / 3) + (canvas.width / (2 + (hand.length - 1))) * (i + 1) - (cdWidth / 4);
+    const y = 400;
+
     ctx.drawImage(
       cards,
       1 + cdWidth * (hand[i] % 14),
       1 + cdHeight * Math.floor(hand[i] / 14),
       cdWidth,
       cdHeight,
-      (hand.length / 112) * (cdWidth / 3) + (canvas.width / (2 + (hand.length - 1))) * (i + 1) - (cdWidth / 4),
-      400,
+      x,
+      y,
       cdWidth / 2,
       cdHeight / 2
     );
+
+    if (i === selectedIndex) {
+      ctx.save();
+      ctx.lineWidth = 6;
+      ctx.strokeStyle = '#ffd166';
+      ctx.shadowColor = 'rgba(0, 0, 0, 0.35)';
+      ctx.shadowBlur = 8;
+      ctx.strokeRect(x - 3, y - 3, cdWidth / 2 + 6, cdHeight / 2 + 6);
+      ctx.restore();
+    }
   }
 }
 
@@ -902,6 +1154,7 @@ function compareCardsForHandSort(a, b) {
 
 socket.on('connect', function () {
   srSpeak('Connected to server', 'polite');
+  attemptResumeLogin();
 });
 
 socket.on('disconnect', function () {
@@ -918,13 +1171,27 @@ socket.on('serverMessage', function (payload) {
 
 socket.on('loginResult', function (payload) {
   if (!payload || !payload.success) {
+    if (appState.resumeLoginPending) {
+      clearRememberedLogin();
+      appState.resumeLoginPending = false;
+    }
     srSpeak(payload && payload.message ? payload.message : 'Login failed', 'assertive');
+    setScreen('auth');
     return;
   }
+
+  const wasResumeLogin = appState.resumeLoginPending;
+  appState.resumeLoginPending = false;
 
   appState.loggedIn = true;
   appState.accountEmail = payload.email || '';
   appState.playerName = payload.name;
+  appState.selectedGameType = null;
+  appState.selectedGameName = '';
+  appState.currentTable = null;
+  appState.selectedLobbyIndex = 0;
+  appState.lobbyTables = [];
+  showGamePicker();
 
   try {
     if (payload.email) {
@@ -933,6 +1200,12 @@ socket.on('loginResult', function (payload) {
     window.localStorage.setItem(displayNameStorageKey, payload.name);
   } catch (error) {
     console.warn('Unable to save auth fields', error);
+  }
+
+  if (payload.rememberToken) {
+    storeRememberedLogin(payload.rememberToken);
+  } else if (!wasResumeLogin) {
+    clearRememberedLogin();
   }
 
   el.passwordInput.value = '';
@@ -947,20 +1220,13 @@ socket.on('logoutResult', function (payload) {
     return;
   }
 
-  appState.loggedIn = false;
-  appState.accountEmail = '';
-  appState.playerName = '';
-  appState.currentTable = null;
-  appState.turn = false;
-  appState.hand = [];
-  appState.handIndex = 0;
-  appState.handBeforeDraw = null;
-  appState.discard = null;
-  appState.discardChosenColor = null;
-  appState.pendingDrawCard = null;
-  appState.gameStatus = 'waiting';
-  appState.isHost = false;
-  appState.currentTurnPlayerId = null;
+  clearRememberedLogin();
+  resetLoggedInState();
+  appState.selectedGameType = null;
+  appState.selectedGameName = '';
+  appState.selectedLobbyIndex = 0;
+  appState.lobbyTables = [];
+  setScreen('auth');
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   closeAnnouncementOverlay(false);
   setTableStatus('Join a table to start playing.', 'info');
@@ -974,20 +1240,13 @@ socket.on('deleteAccountResult', function (payload) {
     return;
   }
 
-  appState.loggedIn = false;
-  appState.accountEmail = '';
-  appState.playerName = '';
-  appState.currentTable = null;
-  appState.turn = false;
-  appState.hand = [];
-  appState.handIndex = 0;
-  appState.handBeforeDraw = null;
-  appState.discard = null;
-  appState.discardChosenColor = null;
-  appState.pendingDrawCard = null;
-  appState.gameStatus = 'waiting';
-  appState.isHost = false;
-  appState.currentTurnPlayerId = null;
+  clearRememberedLogin();
+  resetLoggedInState();
+  appState.selectedGameType = null;
+  appState.selectedGameName = '';
+  appState.selectedLobbyIndex = 0;
+  appState.lobbyTables = [];
+  setScreen('auth');
 
   try {
     window.localStorage.removeItem(displayNameStorageKey);
@@ -1046,6 +1305,31 @@ socket.on('tableState', function (payload) {
   }
 
   render();
+});
+
+socket.on('starterDrawSummary', function (payload) {
+  if (!payload || !Array.isArray(payload.draws) || !payload.draws.length) {
+    return;
+  }
+
+  const drawLines = payload.draws.map(function (draw) {
+    return draw.name + ' drew ' + draw.description + ' (' + draw.score + ' points)';
+  }).join('. ');
+  const winnerName = payload.winner && payload.winner.name ? payload.winner.name : 'A player';
+  const winnerMessage = payload.message || (winnerName + ' starts the first round.');
+  const message = drawLines + '. ' + winnerMessage;
+
+  showAnnouncementOverlay({
+    eyebrow: 'Round Start',
+    title: 'First starter draw',
+    message: message,
+    tone: 'info',
+    sticky: false,
+    duration: 4200
+  });
+
+  setTableStatus(winnerMessage, 'info');
+  srSpeak(message, 'assertive', { lockMs: 2000 });
 });
 
 socket.on('haveCard', function (cardsInHand) {
@@ -1113,21 +1397,15 @@ socket.on('turnPlayer', function (payload) {
 
   appState.currentTurnPlayerId = payload.id;
   appState.turn = payload.id === socket.id;
+  updateCurrentTurnAnnouncement(payload);
 
   if (appState.turn) {
     drawTurnArrow();
-    let msg = 'Your turn';
-    if (payload.topDiscard) {
-      msg += '. Top discard: ' + payload.topDiscard;
-    }
-    if (payload.mustDraw) {
-      msg += '. You have no playable card. Press D to draw.';
-    }
-    setTableStatus(msg, 'alert');
-    srSpeak(msg, 'assertive');
+    setTableStatus(appState.currentTurnAnnouncement || 'Your turn', 'alert');
+    srSpeak(appState.currentTurnAnnouncement || 'Your turn', 'assertive');
   } else {
-    setTableStatus((payload.name || 'Another player') + "'s turn.", 'info');
-    srSpeak((payload.name || 'Another player') + ' is taking a turn', 'polite');
+    setTableStatus(appState.currentTurnAnnouncement || ((payload.name || 'Another player') + "'s turn."), 'info');
+    srSpeak(appState.currentTurnAnnouncement || ((payload.name || 'Another player') + ' is taking a turn'), 'polite');
   }
 
   renderPlayerSummary();
@@ -1207,21 +1485,50 @@ socket.on('roundSummary', function (summary) {
   }
 
   const scoreText = (summary.scores || []).map(function (entry) {
-    return entry.name + ' ' + entry.score;
+    return entry.name + ': +' + entry.roundPoints + ' this round, ' + entry.totalPoints + ' total';
   }).join(', ');
 
-  const msg = summary.winner + ' wins the game for ' + summary.roundPoints + ' points.' + (scoreText ? ' Scores: ' + scoreText : '');
+  const msg = summary.winner + ' won round ' + (summary.roundNumber || 1) + ' for ' + summary.roundPoints + ' points.' + (scoreText ? ' Scores: ' + scoreText : '');
   appState.currentTurnPlayerId = null;
+  appState.currentTurnAnnouncement = '';
+  appState.turn = false;
+  appState.hand = [];
+  appState.handIndex = 0;
+  appState.handBeforeDraw = null;
+  appState.pendingDrawCard = null;
+  drawHand();
   showAnnouncementOverlay({
     eyebrow: 'Round Winner',
     title: summary.winner + ' won the round',
     message: msg,
     tone: 'winner',
-    sticky: true
+    sticky: false,
+    duration: 4200
   });
   setTableStatus(msg, 'success');
   renderPlayerSummary();
   srSpeak(msg, 'assertive', { lockMs: 2200 });
+});
+
+socket.on('matchSummary', function (summary) {
+  if (!summary) {
+    return;
+  }
+
+  const scoreText = (summary.scores || []).map(function (entry) {
+    return entry.name + ': ' + entry.totalPoints;
+  }).join(', ');
+
+  const msg = summary.winner + ' reached ' + summary.score + ' points and won the match.' + (scoreText ? ' Final scores: ' + scoreText : '');
+  showAnnouncementOverlay({
+    eyebrow: 'Match Winner',
+    title: summary.winner + ' won the match',
+    message: msg,
+    tone: 'winner',
+    sticky: true
+  });
+  setTableStatus(msg, 'success');
+  srSpeak(msg, 'assertive', { lockMs: 2500 });
 });
 
 init();

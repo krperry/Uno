@@ -9,11 +9,31 @@ const io = require('socket.io')(http);
 const port = process.env.PORT || 3000;
 const MAX_TABLE_PLAYERS = 6;
 const MIN_TABLE_PLAYERS = 2;
+const MATCH_POINTS_TO_WIN = 500;
 const ACCOUNT_FILE_PATH = path.join(__dirname, 'data', 'accounts.json');
+const DEFAULT_GAME_TYPE = 'uno';
+const GAME_DEFINITIONS = {
+  uno: { type: 'uno', name: 'UNO', playable: true },
+  hearts: { type: 'hearts', name: 'Hearts', playable: false },
+  spades: { type: 'spades', name: 'Spades', playable: false },
+  cribbage: { type: 'cribbage', name: 'Cribbage', playable: false }
+};
 
 app.use(express.static(__dirname + '/public'));
 io.on('connection', onConnection);
-http.listen(port, () => console.log('listening on port ' + port));
+
+const server = http.listen(port, function () {
+  console.log('listening on port ' + port);
+});
+
+server.on('error', function (error) {
+  if (error && error.code === 'EADDRINUSE') {
+    console.error('Port ' + port + ' is already in use. Stop the other server instance and try again.');
+  } else {
+    console.error('Unable to start server:', error);
+  }
+  process.exit(1);
+});
 
 let tableSequence = 1;
 const tables = {};
@@ -48,45 +68,40 @@ function saveAccounts() {
   fs.writeFileSync(ACCOUNT_FILE_PATH, JSON.stringify({ accounts: accounts }, null, 2));
 }
 
-function normalizeEmail(email) {
-  return email.trim().toLowerCase();
+function hashPassword(password) {
+  const salt = crypto.randomBytes(16).toString('hex');
+  const hash = crypto.pbkdf2Sync(password, salt, 100000, 64, 'sha512').toString('hex');
+  return { salt: salt, hash: hash };
 }
 
-function normalizeDisplayName(name) {
-  return name.trim().toLowerCase();
+function verifyPassword(password, salt, hash) {
+  const derivedHash = crypto.pbkdf2Sync(password, salt, 100000, 64, 'sha512').toString('hex');
+  return derivedHash === hash;
+}
+
+function normalizeEmail(email) {
+  return typeof email === 'string' ? email.trim().toLowerCase() : '';
+}
+
+function normalizeDisplayName(displayName) {
+  return typeof displayName === 'string' ? displayName.trim().toLowerCase() : '';
 }
 
 function isValidEmail(email) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 }
 
-function hashPassword(password, saltHex) {
-  const salt = saltHex || crypto.randomBytes(16).toString('hex');
-  const hash = crypto.scryptSync(password, salt, 64).toString('hex');
-  return {
-    salt: salt,
-    hash: hash
-  };
-}
-
-function verifyPassword(password, salt, expectedHash) {
-  const candidate = crypto.scryptSync(password, salt, 64);
-  const expected = Buffer.from(expectedHash, 'hex');
-  if (candidate.length !== expected.length) {
-    return false;
-  }
-  return crypto.timingSafeEqual(candidate, expected);
-}
-
-function findAccountByEmail(normalizedEmail) {
+function findAccountByEmail(email) {
+  const normalized = normalizeEmail(email);
   return accounts.find(function (account) {
-    return account.emailLower === normalizedEmail;
+    return account.emailLower === normalized;
   }) || null;
 }
 
-function findAccountByDisplayName(normalizedDisplayName) {
+function findAccountByDisplayName(displayName) {
+  const normalized = normalizeDisplayName(displayName);
   return accounts.find(function (account) {
-    return account.displayNameLower === normalizedDisplayName;
+    return account.displayNameLower === normalized;
   }) || null;
 }
 
@@ -94,38 +109,101 @@ function attachSocketToAccount(socket, account) {
   socket.accountId = account.id;
   socket.accountEmail = account.email;
   socket.playerName = account.displayName;
+  socket.displayNameLower = account.displayNameLower;
 }
 
 function clearSocketAuth(socket) {
   socket.accountId = null;
   socket.accountEmail = '';
   socket.playerName = '';
+  socket.displayNameLower = '';
+}
+
+function normalizeGameType(gameType) {
+  if (typeof gameType !== 'string') {
+    return DEFAULT_GAME_TYPE;
+  }
+
+  const normalized = gameType.trim().toLowerCase();
+  return GAME_DEFINITIONS[normalized] ? normalized : DEFAULT_GAME_TYPE;
+}
+
+function getGameDefinition(gameType) {
+  return GAME_DEFINITIONS[normalizeGameType(gameType)] || GAME_DEFINITIONS[DEFAULT_GAME_TYPE];
+}
+
+function normalizeIndex(index, count) {
+  if (count <= 0) {
+    return 0;
+  }
+
+  const normalized = index % count;
+  return normalized < 0 ? normalized + count : normalized;
+}
+
+function getNextPlayerIndex(table, currentIndex, steps) {
+  return normalizeIndex(currentIndex + steps, table.players.length);
+}
+
+function getPlayerIndex(table, socketId) {
+  return table.players.findIndex(function (player) {
+    return player.id === socketId;
+  });
+}
+
+function findTableBySocket(socket) {
+  if (!socket || !socket.tableId) {
+    return null;
+  }
+
+  return tables[socket.tableId] || null;
+}
+
+function createTableId() {
+  const prefix = 'table';
+  const suffix = tableSequence.toString().padStart(4, '0');
+  tableSequence += 1;
+  return prefix + suffix;
 }
 
 function createDeck() {
-  const baseDeck = Array.apply(null, Array(112)).map(function (_, i) { return i; });
-  baseDeck.splice(56, 1);
-  baseDeck.splice(69, 1);
-  baseDeck.splice(82, 1);
-  baseDeck.splice(95, 1);
-  return baseDeck;
+  const deck = [];
+  for (let color = 0; color < 4; color++) {
+    deck.push(color * 14 + 0);
+    for (let value = 1; value <= 12; value++) {
+      deck.push(color * 14 + value);
+      deck.push(color * 14 + value);
+    }
+  }
+
+  for (let color = 0; color < 4; color++) {
+    deck.push(4 * 14 + color * 2 + 13);
+    deck.push(4 * 14 + color * 2 + 13);
+  }
+
+  for (let color = 0; color < 4; color++) {
+    deck.push(4 * 14 + color + 13);
+    deck.push(4 * 14 + color + 13);
+  }
+
+  return deck;
 }
 
-function shuffle(a) {
-  for (let i = a.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    const x = a[i];
-    a[i] = a[j];
-    a[j] = x;
+function shuffle(deck) {
+  for (let index = deck.length - 1; index > 0; index--) {
+    const swapIndex = Math.floor(Math.random() * (index + 1));
+    const temp = deck[index];
+    deck[index] = deck[swapIndex];
+    deck[swapIndex] = temp;
   }
 }
 
-function cardColor(num) {
-  if (num % 14 === 13) {
+function cardColor(card) {
+  if (card % 14 === 13) {
     return 'black';
   }
 
-  switch (Math.floor(num / 14)) {
+  switch (Math.floor(card / 14)) {
     case 0:
     case 4:
       return 'red';
@@ -143,8 +221,51 @@ function cardColor(num) {
   }
 }
 
-function cardType(num) {
-  switch (num % 14) {
+function getCurrentBoardColor(table) {
+  if (!table || !table.game) {
+    return null;
+  }
+
+  if (table.game.chosenColor) {
+    return table.game.chosenColor;
+  }
+
+  return cardColor(table.game.cardOnBoard);
+}
+
+function canPlayCardOnBoard(table, card) {
+  if (!table || !table.game || typeof card !== 'number') {
+    return false;
+  }
+
+  const currentCard = table.game.cardOnBoard;
+  const currentColor = getCurrentBoardColor(table);
+  const cardColorName = cardColor(card);
+  const currentCardType = cardType(currentCard);
+
+  if (cardColorName === 'black') {
+    return true;
+  }
+
+  if (cardColorName === currentColor) {
+    return true;
+  }
+
+  return cardType(card) === currentCardType;
+}
+
+function hasPlayableCard(table, hand) {
+  if (!Array.isArray(hand)) {
+    return false;
+  }
+
+  return hand.some(function (card) {
+    return canPlayCardOnBoard(table, card);
+  });
+}
+
+function cardType(card) {
+  switch (card % 14) {
     case 10:
       return 'Skip';
     case 11:
@@ -152,93 +273,317 @@ function cardType(num) {
     case 12:
       return 'Draw2';
     case 13:
-      return Math.floor(num / 14) >= 4 ? 'Draw4' : 'Wild';
+      return Math.floor(card / 14) >= 4 ? 'Draw4' : 'Wild';
     default:
-      return 'Number ' + (num % 14);
+      return 'Number ' + (card % 14);
   }
-}
-
-function cardScore(num) {
-  switch (num % 14) {
-    case 10:
-    case 11:
-    case 12:
-      return 20;
-    case 13:
-      return 50;
-    default:
-      return num % 14;
-  }
-}
-
-function normalizeIndex(index, total) {
-  return ((index % total) + total) % total;
-}
-
-function getNextPlayerIndex(table, startIndex, steps) {
-  const direction = table.game.reverse === 0 ? 1 : -1;
-  return normalizeIndex(startIndex + direction * steps, table.players.length);
-}
-
-function getCurrentBoardColor(table) {
-  const boardColor = cardColor(table.game.cardOnBoard);
-  if (boardColor === 'black' && table.game.chosenColor) {
-    return table.game.chosenColor;
-  }
-  return boardColor;
 }
 
 function describeCard(card, chosenColor) {
-  const color = cardColor(card) === 'black' && chosenColor ? chosenColor : cardColor(card);
-  return cardType(card) + ' ' + color;
-}
-
-function canPlayCardOnBoard(table, card) {
-  const playedColor = cardColor(card);
-  const playedNumber = card % 14;
-  const boardNumber = table.game.cardOnBoard % 14;
-  const boardColor = getCurrentBoardColor(table);
-
-  if (playedColor === 'black') {
-    return true;
+  if (typeof card !== 'number') {
+    return 'No card';
   }
 
-  return playedColor === boardColor || playedNumber === boardNumber;
+  const colorName = cardColor(card) === 'black' && chosenColor ? chosenColor : cardColor(card);
+  const base = cardType(card);
+  if (base === 'Number 0' || base === 'Number 1' || base === 'Number 2' || base === 'Number 3' || base === 'Number 4' || base === 'Number 5' || base === 'Number 6' || base === 'Number 7' || base === 'Number 8' || base === 'Number 9') {
+    return colorName + ' ' + base.replace('Number ', '');
+  }
+
+  if (cardColor(card) === 'black') {
+    return base + ' (' + colorName + ')';
+  }
+
+  return colorName + ' ' + base;
 }
 
-function hasPlayableCard(table, hand) {
-  return hand.some(function (card) {
-    return canPlayCardOnBoard(table, card);
+function cardScore(card) {
+  if (typeof card !== 'number') {
+    return 0;
+  }
+
+  if (cardColor(card) === 'black') {
+    return 50;
+  }
+
+  const value = card % 14;
+  if (value >= 10) {
+    return 20;
+  }
+
+  return value;
+}
+
+function getHighestStarterDrawIndex(draws) {
+  let highestIndex = 0;
+  let highestCard = draws[0] ? draws[0].card : -1;
+  draws.forEach(function (draw, index) {
+    if (draw.card > highestCard) {
+      highestCard = draw.card;
+      highestIndex = index;
+    }
   });
+  return highestIndex;
 }
 
-function createTableId() {
-  const id = 'table_' + tableSequence;
-  tableSequence += 1;
-  return id;
+function hashRememberToken(token) {
+  return crypto.createHash('sha256').update(token).digest('hex');
 }
 
-function findTableBySocket(socket) {
-  if (!socket.tableId || !tables[socket.tableId]) {
+function issueRememberToken(account) {
+  const rememberToken = crypto.randomBytes(32).toString('hex');
+  account.rememberTokenHash = hashRememberToken(rememberToken);
+  account.rememberTokenIssuedAt = new Date().toISOString();
+  saveAccounts();
+  return rememberToken;
+}
+
+function clearRememberToken(account) {
+  if (!account) {
+    return;
+  }
+
+  delete account.rememberTokenHash;
+  delete account.rememberTokenIssuedAt;
+  saveAccounts();
+}
+
+function findAccountByRememberToken(token) {
+  if (!token) {
     return null;
   }
-  return tables[socket.tableId];
+
+  const tokenHash = hashRememberToken(token);
+  return accounts.find(function (account) {
+    return account.rememberTokenHash === tokenHash;
+  }) || null;
+}
+function calculateRoundPoints(table, winnerIndex) {
+  let points = 0;
+  for (let i = 0; i < table.players.length; i++) {
+    if (i === winnerIndex) {
+      continue;
+    }
+
+    table.players[i].hand.forEach(function (card) {
+      points += cardScore(card);
+    });
+  }
+  return points;
 }
 
-function getPlayerIndex(table, socketId) {
-  return table.players.findIndex(function (player) {
-    return player.id === socketId;
+function endRound(table, winnerIndex, reason) {
+  if (!table.players[winnerIndex]) {
+    return;
+  }
+
+  const winnerName = table.players[winnerIndex].name;
+  const roundPoints = calculateRoundPoints(table, winnerIndex);
+  table.scores[winnerName] = (table.scores[winnerName] || 0) + roundPoints;
+
+  table.game.lastRoundPoints = {};
+  table.players.forEach(function (player) {
+    table.game.lastRoundPoints[player.name] = player.hand.reduce(function (sum, card) {
+      return sum + cardScore(card);
+    }, 0);
   });
+
+  const scoreboard = buildScoreboard(table);
+  const matchWinner = scoreboard.find(function (entry) {
+    return entry.totalPoints >= MATCH_POINTS_TO_WIN;
+  }) || null;
+
+  io.to(table.id).emit('roundSummary', {
+    winner: winnerName,
+    roundPoints: roundPoints,
+    scores: scoreboard,
+    reason: reason || 'round_end',
+    matchWinner: matchWinner,
+    roundNumber: table.game.roundNumber || 1
+  });
+
+  io.to(table.id).emit('actionNotice', winnerName + ' won the round for ' + roundPoints + ' points.');
+
+  table.players.forEach(function (player) {
+    player.hand = [];
+  });
+
+  emitTableState(table);
+  emitLobbySnapshotAll();
+
+  if (matchWinner) {
+    io.to(table.id).emit('matchSummary', {
+      winner: matchWinner.name,
+      score: matchWinner.totalPoints,
+      scores: scoreboard,
+      reason: reason || 'match_complete'
+    });
+    io.to(table.id).emit('actionNotice', matchWinner.name + ' won the match with ' + matchWinner.totalPoints + ' points.');
+    table.status = 'waiting';
+    table.game = null;
+    emitTableState(table);
+    emitLobbySnapshotAll();
+    return;
+  }
+
+  table.game.locked = true;
+  table.game.roundNumber = (table.game.roundNumber || 1) + 1;
+  table.game.startingPlayerIndex = normalizeIndex(table.game.startingPlayerIndex + 1, table.players.length);
+
+  setTimeout(function () {
+    if (!table.game || table.status !== 'in_game') {
+      return;
+    }
+
+    beginRound(table, {
+      isFirstRound: false,
+      announceStarter: false
+    });
+  }, 1800);
+}
+
+function initializeGameState(table) {
+  table.game = {
+    deck: createDeck(),
+    reverse: 0,
+    turn: 0,
+    cardOnBoard: 0,
+    chosenColor: null,
+    hasDrawn: false,
+    locked: false,
+    roundNumber: 1,
+    startingPlayerIndex: 0,
+    lastRoundPoints: {}
+  };
+
+  shuffle(table.game.deck);
+}
+
+function drawStarterCards(table) {
+  const draws = table.players.map(function (player) {
+    ensureDeckNotEmpty(table);
+    const card = parseInt(table.game.deck.shift(), 10);
+    return {
+      id: player.id,
+      name: player.name,
+      card: card,
+      score: cardScore(card),
+      description: describeCard(card)
+    };
+  });
+
+  const highestIndex = getHighestStarterDrawIndex(draws);
+  const winner = draws[highestIndex];
+
+  draws.forEach(function (draw) {
+    table.game.deck.push(draw.card);
+  });
+  shuffle(table.game.deck);
+
+  table.game.startingPlayerIndex = highestIndex;
+
+  io.to(table.id).emit('starterDrawSummary', {
+    draws: draws,
+    winner: winner,
+    winnerIndex: highestIndex,
+    message: winner.name + ' starts the first round with ' + winner.description + ' worth ' + winner.score + ' points.'
+  });
+  io.to(table.id).emit('actionNotice', 'Each player drew one card to determine the first starter. ' + winner.name + ' goes first.');
+}
+
+function beginRound(table, options) {
+  const isFirstRound = !!(options && options.isFirstRound);
+
+  if (!isFirstRound) {
+    table.game.deck = createDeck();
+    shuffle(table.game.deck);
+  }
+
+  table.game.reverse = 0;
+  table.game.cardOnBoard = 0;
+  table.game.chosenColor = null;
+  table.game.hasDrawn = false;
+  table.game.locked = false;
+  table.game.lastRoundPoints = {};
+
+  table.players.forEach(function (player) {
+    player.hand = [];
+  });
+
+  const dealStartIndex = normalizeIndex(table.game.startingPlayerIndex + 1, table.players.length);
+
+  for (let i = 0; i < table.players.length * 7; i++) {
+    const playerIndex = normalizeIndex(i + dealStartIndex, table.players.length);
+    ensureDeckNotEmpty(table);
+    const card = parseInt(table.game.deck.shift(), 10);
+    table.players[playerIndex].hand.push(card);
+  }
+
+  let starterCard;
+  do {
+    ensureDeckNotEmpty(table);
+    starterCard = parseInt(table.game.deck.shift(), 10);
+    if (cardColor(starterCard) === 'black') {
+      table.game.deck.push(starterCard);
+      shuffle(table.game.deck);
+    } else {
+      break;
+    }
+  } while (true);
+
+  table.game.cardOnBoard = starterCard;
+  table.game.turn = table.game.startingPlayerIndex;
+
+  if (cardType(starterCard) === 'Draw2') {
+    drawCardsFromDeck(table, table.game.turn, 2);
+    advanceTurn(table, 1);
+  } else if (cardType(starterCard) === 'Reverse') {
+    table.game.reverse = 1;
+    if (table.players.length === 2) {
+      advanceTurn(table, 1);
+    }
+  } else if (cardType(starterCard) === 'Skip') {
+    advanceTurn(table, 1);
+  }
+
+  sendHands(table);
+  emitDiscardCard(table);
+  emitTurnPlayer(table);
+  emitTableState(table);
+  emitLobbySnapshotAll();
+
+  if (isFirstRound && options && options.announceStarter) {
+    const starterName = table.players[table.game.startingPlayerIndex] ? table.players[table.game.startingPlayerIndex].name : '';
+    io.to(table.id).emit('actionNotice', starterName + ' starts the first round.');
+  }
+}
+
+function startGameForTable(table) {
+  if (table.players.length < MIN_TABLE_PLAYERS) {
+    return { success: false, message: 'At least 2 players are required to start a game' };
+  }
+
+  table.status = 'in_game';
+  initializeGameState(table);
+  drawStarterCards(table);
+  beginRound(table, {
+    isFirstRound: true,
+    announceStarter: true
+  });
+  return { success: true };
 }
 
 function buildLobbySnapshot() {
   const list = Object.keys(tables).map(function (tableId) {
     const table = tables[tableId];
+    const gameDefinition = getGameDefinition(table.gameType);
     return {
       id: table.id,
       name: table.name,
       hostName: table.hostName,
       status: table.status,
+      gameType: table.gameType,
+      gameName: gameDefinition.name,
       playerCount: table.players.length,
       maxPlayers: MAX_TABLE_PLAYERS
     };
@@ -261,10 +606,13 @@ function sendLobbySnapshot(socket) {
 }
 
 function buildTableState(table, socketId) {
+  const gameDefinition = getGameDefinition(table.gameType);
   return {
     table: {
       id: table.id,
       name: table.name,
+      gameType: table.gameType,
+      gameName: gameDefinition.name,
       hostId: table.hostId,
       hostName: table.hostName,
       status: table.status,
@@ -272,7 +620,9 @@ function buildTableState(table, socketId) {
         return {
           id: player.id,
           name: player.name,
-          cardCount: table.status === 'in_game' ? player.hand.length : 0
+          cardCount: table.status === 'in_game' ? player.hand.length : 0,
+          score: getPlayerScore(table, player.name),
+          roundPoints: getRoundPoints(table, player.name)
         };
       })
     },
@@ -322,13 +672,17 @@ function emitTurnPlayer(table) {
   }
 
   const canPlay = hasPlayableCard(table, currentPlayer.hand);
-  io.to(table.id).emit('turnPlayer', {
+  const payload = {
     id: currentPlayer.id,
     name: currentPlayer.name,
     canPlay: canPlay,
     mustDraw: !canPlay,
-    topDiscard: describeCard(table.game.cardOnBoard, table.game.chosenColor)
-  });
+    topDiscard: describeCard(table.game.cardOnBoard, table.game.chosenColor),
+    startingPlayer: table.players[table.game.startingPlayerIndex] ? table.players[table.game.startingPlayerIndex].name : currentPlayer.name,
+    turnNumber: table.game.roundNumber || 1
+  };
+
+  io.to(table.id).emit('turnPlayer', payload);
 }
 
 function advanceTurn(table, steps) {
@@ -350,15 +704,33 @@ function calculateRoundPoints(table, winnerIndex) {
   return points;
 }
 
-function getScoreboard(table) {
+function buildScoreboard(table) {
   return table.players.map(function (player) {
+    const totalPoints = typeof table.scores[player.name] === 'number' ? table.scores[player.name] : 0;
+    const roundPoints = table.game && table.game.lastRoundPoints && typeof table.game.lastRoundPoints[player.name] === 'number'
+      ? table.game.lastRoundPoints[player.name]
+      : 0;
+
     return {
       name: player.name,
-      score: table.scores[player.name] || 0
+      roundPoints: roundPoints,
+      totalPoints: totalPoints
     };
   }).sort(function (a, b) {
-    return b.score - a.score;
+    return b.totalPoints - a.totalPoints;
   });
+}
+
+function getPlayerScore(table, playerName) {
+  return typeof table.scores[playerName] === 'number' ? table.scores[playerName] : 0;
+}
+
+function getRoundPoints(table, playerName) {
+  if (!table.game || !table.game.lastRoundPoints) {
+    return 0;
+  }
+
+  return typeof table.game.lastRoundPoints[playerName] === 'number' ? table.game.lastRoundPoints[playerName] : 0;
 }
 
 function endRound(table, winnerIndex, reason) {
@@ -370,105 +742,65 @@ function endRound(table, winnerIndex, reason) {
   const roundPoints = calculateRoundPoints(table, winnerIndex);
   table.scores[winnerName] = (table.scores[winnerName] || 0) + roundPoints;
 
+  table.game.lastRoundPoints = {};
+  table.players.forEach(function (player) {
+    table.game.lastRoundPoints[player.name] = player.hand.reduce(function (sum, card) {
+      return sum + cardScore(card);
+    }, 0);
+  });
+
+  const scoreboard = buildScoreboard(table);
+  const matchWinner = scoreboard.find(function (entry) {
+    return entry.totalPoints >= MATCH_POINTS_TO_WIN;
+  }) || null;
+
   io.to(table.id).emit('roundSummary', {
     winner: winnerName,
     roundPoints: roundPoints,
-    scores: getScoreboard(table),
-    reason: reason || 'round_end'
+    scores: scoreboard,
+    reason: reason || 'round_end',
+    matchWinner: matchWinner,
+    roundNumber: table.game.roundNumber || 1
   });
 
-  io.to(table.id).emit('actionNotice', winnerName + ' won the game. Host can start a new game when ready.');
+  io.to(table.id).emit('actionNotice', winnerName + ' won the round for ' + roundPoints + ' points.');
 
   table.players.forEach(function (player) {
     player.hand = [];
   });
 
-  table.status = 'waiting';
-  table.game = null;
   emitTableState(table);
   emitLobbySnapshotAll();
-}
 
-function initializeGameState(table) {
-  table.game = {
-    deck: createDeck(),
-    reverse: 0,
-    turn: 0,
-    cardOnBoard: 0,
-    chosenColor: null,
-    hasDrawn: false
-  };
-
-  shuffle(table.game.deck);
-
-  if (table.players.length === 0) {
+  if (matchWinner) {
+    io.to(table.id).emit('matchSummary', {
+      winner: matchWinner.name,
+      score: matchWinner.totalPoints,
+      scores: scoreboard,
+      reason: reason || 'match_complete'
+    });
+    io.to(table.id).emit('actionNotice', matchWinner.name + ' won the match with ' + matchWinner.totalPoints + ' points.');
+    table.status = 'waiting';
+    table.game = null;
+    emitTableState(table);
+    emitLobbySnapshotAll();
     return;
   }
 
-  if (typeof table.dealerIndex !== 'number' || table.dealerIndex < 0 || table.dealerIndex >= table.players.length) {
-    table.dealerIndex = Math.floor(Math.random() * table.players.length);
-  } else {
-    table.dealerIndex = normalizeIndex(table.dealerIndex + 1, table.players.length);
-  }
+  table.game.locked = true;
+  table.game.roundNumber = (table.game.roundNumber || 1) + 1;
+  table.game.startingPlayerIndex = normalizeIndex(table.game.startingPlayerIndex + 1, table.players.length);
 
-  table.players.forEach(function (player) {
-    player.hand = [];
-    if (typeof table.scores[player.name] !== 'number') {
-      table.scores[player.name] = 0;
+  setTimeout(function () {
+    if (!table.game || table.status !== 'in_game') {
+      return;
     }
-  });
 
-  for (let i = 0; i < table.players.length * 7; i++) {
-    const playerIndex = normalizeIndex(i + table.dealerIndex + 1, table.players.length);
-    ensureDeckNotEmpty(table);
-    const card = parseInt(table.game.deck.shift(), 10);
-    table.players[playerIndex].hand.push(card);
-  }
-
-  let starterCard;
-  do {
-    ensureDeckNotEmpty(table);
-    starterCard = parseInt(table.game.deck.shift(), 10);
-    if (cardColor(starterCard) === 'black') {
-      table.game.deck.push(starterCard);
-      shuffle(table.game.deck);
-    } else {
-      break;
-    }
-  } while (true);
-
-  table.game.cardOnBoard = starterCard;
-  table.game.chosenColor = null;
-  table.game.hasDrawn = false;
-  table.game.turn = normalizeIndex(table.dealerIndex + 1, table.players.length);
-
-  if (cardType(starterCard) === 'Draw2') {
-    drawCardsFromDeck(table, table.game.turn, 2);
-    advanceTurn(table, 1);
-  } else if (cardType(starterCard) === 'Reverse') {
-    table.game.reverse = 1;
-    if (table.players.length === 2) {
-      advanceTurn(table, 1);
-    }
-  } else if (cardType(starterCard) === 'Skip') {
-    advanceTurn(table, 1);
-  }
-}
-
-function startGameForTable(table) {
-  if (table.players.length < MIN_TABLE_PLAYERS) {
-    return { success: false, message: 'At least 2 players are required to start a game' };
-  }
-
-  initializeGameState(table);
-  table.status = 'in_game';
-
-  sendHands(table);
-  emitDiscardCard(table);
-  emitTurnPlayer(table);
-  emitTableState(table);
-  emitLobbySnapshotAll();
-  return { success: true };
+    beginRound(table, {
+      isFirstRound: false,
+      announceStarter: false
+    });
+  }, 1800);
 }
 
 function assignNewHostIfNeeded(table) {
@@ -502,6 +834,10 @@ function handlePlayerRemovalFromGame(table, removedIndex, playerName) {
 
   if (removedIndex < table.game.turn) {
     table.game.turn -= 1;
+  }
+
+  if (removedIndex < table.game.startingPlayerIndex) {
+    table.game.startingPlayerIndex -= 1;
   }
 
   if (removedIndex === table.game.turn && table.game.turn >= table.players.length - 1) {
@@ -570,6 +906,30 @@ function onConnection(socket) {
   clearSocketAuth(socket);
   socket.tableId = null;
 
+  socket.on('resumeLogin', function (payload) {
+    if (socket.accountId) {
+      socket.emit('loginResult', { success: false, message: 'Already logged in' });
+      return;
+    }
+
+    const rememberToken = payload && typeof payload.token === 'string' ? payload.token.trim() : '';
+    const account = findAccountByRememberToken(rememberToken);
+
+    if (!account) {
+      socket.emit('loginResult', { success: false, message: 'Saved sign-in expired. Log in again.' });
+      return;
+    }
+
+    attachSocketToAccount(socket, account);
+    socket.emit('loginResult', {
+      success: true,
+      name: socket.playerName,
+      email: socket.accountEmail,
+      remembered: true
+    });
+    sendLobbySnapshot(socket);
+  });
+
   socket.on('registerAccount', function (payload) {
     if (socket.accountId) {
       socket.emit('loginResult', { success: false, message: 'Already logged in' });
@@ -579,6 +939,7 @@ function onConnection(socket) {
     const email = payload && typeof payload.email === 'string' ? payload.email.trim() : '';
     const password = payload && typeof payload.password === 'string' ? payload.password : '';
     const displayName = payload && typeof payload.displayName === 'string' ? payload.displayName.trim() : '';
+    const rememberMe = !!(payload && payload.rememberMe);
 
     if (!email || !password || !displayName) {
       socket.emit('loginResult', { success: false, message: 'Email, password, and display name are required' });
@@ -628,7 +989,13 @@ function onConnection(socket) {
     accounts.push(account);
     saveAccounts();
     attachSocketToAccount(socket, account);
-    socket.emit('loginResult', { success: true, name: socket.playerName, email: socket.accountEmail });
+    const rememberToken = rememberMe ? issueRememberToken(account) : null;
+    socket.emit('loginResult', {
+      success: true,
+      name: socket.playerName,
+      email: socket.accountEmail,
+      rememberToken: rememberToken
+    });
     sendLobbySnapshot(socket);
   });
 
@@ -640,6 +1007,7 @@ function onConnection(socket) {
 
     const email = payload && typeof payload.email === 'string' ? payload.email.trim() : '';
     const password = payload && typeof payload.password === 'string' ? payload.password : '';
+    const rememberMe = !!(payload && payload.rememberMe);
 
     if (!email || !password) {
       socket.emit('loginResult', { success: false, message: 'Email and password are required' });
@@ -659,7 +1027,13 @@ function onConnection(socket) {
     }
 
     attachSocketToAccount(socket, account);
-    socket.emit('loginResult', { success: true, name: socket.playerName, email: socket.accountEmail });
+    const rememberToken = rememberMe ? issueRememberToken(account) : null;
+    socket.emit('loginResult', {
+      success: true,
+      name: socket.playerName,
+      email: socket.accountEmail,
+      rememberToken: rememberToken
+    });
     sendLobbySnapshot(socket);
   });
 
@@ -667,6 +1041,13 @@ function onConnection(socket) {
     if (!validatePlayerReady(socket)) {
       socket.emit('logoutResult', { success: false, message: 'Not logged in' });
       return;
+    }
+
+    const accountIndex = accounts.findIndex(function (account) {
+      return account.id === socket.accountId;
+    });
+    if (accountIndex >= 0) {
+      clearRememberToken(accounts[accountIndex]);
     }
 
     leaveCurrentTable(socket, 'logout');
@@ -699,6 +1080,7 @@ function onConnection(socket) {
       }
 
       leaveCurrentTable(socket, 'account_delete');
+      clearRememberToken(account);
       accounts.splice(accountIndex, 1);
       saveAccounts();
       clearSocketAuth(socket);
@@ -732,6 +1114,7 @@ function onConnection(socket) {
       return;
     }
 
+    clearRememberToken(account);
     accounts.splice(accountIndex, 1);
     saveAccounts();
     socket.emit('deleteAccountResult', {
@@ -753,8 +1136,15 @@ function onConnection(socket) {
     }
 
     const tableName = payload && typeof payload.name === 'string' ? payload.name.trim() : '';
+    const gameType = normalizeGameType(payload && payload.gameType);
     if (!tableName) {
       socket.emit('serverMessage', { type: 'error', message: 'Table name is required' });
+      return;
+    }
+
+    const gameDefinition = getGameDefinition(gameType);
+    if (!gameDefinition.playable) {
+      socket.emit('serverMessage', { type: 'error', message: gameDefinition.name + ' is not available yet' });
       return;
     }
 
@@ -767,12 +1157,15 @@ function onConnection(socket) {
       return;
     }
 
+    console.log('createTable request', { socketId: socket.id, playerName: socket.playerName, tableName: tableName, gameType: gameType });
+
     leaveCurrentTable(socket, 'switch_table');
 
     const id = createTableId();
     const table = {
       id: id,
       name: tableName,
+      gameType: gameDefinition.type,
       hostId: socket.id,
       hostName: socket.playerName,
       status: 'waiting',
@@ -786,6 +1179,7 @@ function onConnection(socket) {
     tables[id] = table;
     socket.join(id);
     socket.tableId = id;
+    console.log('createTable success', { socketId: socket.id, tableId: id, tableIdStored: socket.tableId, playerName: socket.playerName });
 
     emitTableState(table);
     emitLobbySnapshotAll();
@@ -805,6 +1199,11 @@ function onConnection(socket) {
 
     const table = tables[tableId];
 
+    if (table.gameType && table.gameType !== DEFAULT_GAME_TYPE) {
+      socket.emit('serverMessage', { type: 'error', message: getGameDefinition(table.gameType).name + ' is not available yet' });
+      return;
+    }
+
     if (table.status === 'in_game') {
       socket.emit('serverMessage', { type: 'error', message: 'Cannot join a game already in progress' });
       return;
@@ -815,6 +1214,8 @@ function onConnection(socket) {
       return;
     }
 
+    console.log('joinTable request', { socketId: socket.id, playerName: socket.playerName, tableId: tableId });
+
     leaveCurrentTable(socket, 'switch_table');
 
     table.players.push({ id: socket.id, name: socket.playerName, hand: [] });
@@ -824,6 +1225,7 @@ function onConnection(socket) {
 
     socket.join(table.id);
     socket.tableId = table.id;
+    console.log('joinTable success', { socketId: socket.id, tableId: table.id, tableIdStored: socket.tableId, playerName: socket.playerName });
 
     emitTableState(table);
     emitLobbySnapshotAll();
@@ -850,6 +1252,8 @@ function onConnection(socket) {
       return;
     }
 
+    console.log('startGame request', { socketId: socket.id, tableId: table.id, hostId: table.hostId, status: table.status, players: table.players.length });
+
     if (table.hostId !== socket.id) {
       socket.emit('serverMessage', { type: 'error', message: 'Only the host can start the game' });
       return;
@@ -861,6 +1265,7 @@ function onConnection(socket) {
     }
 
     const result = startGameForTable(table);
+    console.log('startGame result', { success: result.success, tableId: table.id, status: table.status, game: !!table.game, players: table.players.length });
     if (!result.success) {
       socket.emit('serverMessage', { type: 'error', message: result.message });
       return;
@@ -884,7 +1289,7 @@ function onConnection(socket) {
 
   socket.on('drawCard', function () {
     const table = findTableBySocket(socket);
-    if (!table || table.status !== 'in_game' || !table.game) {
+    if (!table || table.status !== 'in_game' || !table.game || table.game.locked) {
       socket.emit('drawResult', { success: false, message: 'Unable to draw a card right now' });
       return;
     }
@@ -938,7 +1343,7 @@ function onConnection(socket) {
 
   socket.on('playCard', function (payload) {
     const table = findTableBySocket(socket);
-    if (!table || table.status !== 'in_game' || !table.game) {
+    if (!table || table.status !== 'in_game' || !table.game || table.game.locked) {
       socket.emit('playResult', { success: false, message: 'Unable to play a card right now' });
       return;
     }

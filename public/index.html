@@ -19,11 +19,35 @@
         <input id="password-input" type="password" maxlength="128" autocomplete="current-password">
         <label for="display-name-input">Display name (for new accounts)</label>
         <input id="display-name-input" type="text" maxlength="32" autocomplete="nickname">
+        <label class="checkbox-row" for="remember-me-input">
+          <input id="remember-me-input" type="checkbox">
+          <span>Remember me on this device</span>
+        </label>
         <div class="row">
           <button id="login-btn" type="button">Log In</button>
           <button id="create-account-btn" type="button">Create Account</button>
           <button id="delete-account-btn" type="button">Delete Account</button>
           <button id="clear-saved-btn" type="button">Clear Saved Email</button>
+        </div>
+      </section>
+
+      <section id="game-picker-view" class="panel hidden" aria-labelledby="game-picker-title">
+        <h2 id="game-picker-title">Choose a game</h2>
+        <p id="game-picker-summary">Pick a card game to continue. UNO is available now; the others are accessible previews for later work.</p>
+        <div class="game-picker-grid" role="list" aria-label="Available games">
+          <button id="select-uno-btn" type="button" class="game-option">UNO</button>
+          <button id="select-hearts-btn" type="button" class="game-option">Hearts</button>
+          <button id="select-spades-btn" type="button" class="game-option">Spades</button>
+          <button id="select-cribbage-btn" type="button" class="game-option">Cribbage</button>
+        </div>
+      </section>
+
+      <section id="placeholder-view" class="panel hidden" aria-labelledby="placeholder-title">
+        <h2 id="placeholder-title">Game preview</h2>
+        <p id="placeholder-message"></p>
+        <div class="row">
+          <button id="placeholder-back-btn" type="button">Back to game picker</button>
+          <button id="placeholder-uno-btn" type="button">Play UNO</button>
         </div>
       </section>
 

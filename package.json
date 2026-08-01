@@ -4,7 +4,8 @@
   "description": "UNO game on javascript",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "stop": "node stop.js"
   },
   "repository": {
     "type": "git",

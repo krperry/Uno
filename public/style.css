@@ -219,6 +219,51 @@ canvas {
   background: #f2fbf8;
 }
 
+.checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 12px 0;
+  font-size: 15px;
+  color: #234544;
+}
+
+.checkbox-row input {
+  width: 18px;
+  height: 18px;
+  margin: 0;
+}
+
+.game-picker-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.game-option {
+  min-height: 88px;
+  border: 2px solid #1d7d6b;
+  border-radius: 12px;
+  background: linear-gradient(180deg, #f8fffd, #e7faf4);
+  color: #123b39;
+  font-size: 18px;
+  font-weight: 700;
+  text-align: left;
+  padding: 16px;
+  box-shadow: 0 10px 18px rgba(18, 59, 57, 0.08);
+}
+
+.game-option:hover,
+.game-option:focus-visible {
+  border-color: #0f6357;
+  box-shadow: 0 0 0 3px rgba(29, 125, 107, 0.16), 0 12px 22px rgba(18, 59, 57, 0.12);
+}
+
+#placeholder-view .row {
+  margin-top: 18px;
+}
+
 .announcement-eyebrow {
   margin: 0 0 8px;
   font-size: 13px;
