@@ -327,6 +327,38 @@ function describeCard(card, chosenColor) {
   return colorName + ' ' + base;
 }
 
+function describeCardForAnnouncement(card, chosenColor) {
+  if (typeof card !== 'number') {
+    return 'No card';
+  }
+
+  const type = cardType(card);
+  const resolvedColor = cardColor(card) === 'black' ? chosenColor : cardColor(card);
+  const colorLabel = capitalizeWord(resolvedColor || '');
+
+  if (type.indexOf('Number ') === 0) {
+    return colorLabel + ' ' + type.replace('Number ', '');
+  }
+
+  if (type === 'Draw2') {
+    return colorLabel + ' Draw Two';
+  }
+
+  if (type === 'Draw4') {
+    return 'Wild Draw Four';
+  }
+
+  if (type === 'Wild') {
+    return 'Wild';
+  }
+
+  return colorLabel + ' ' + type;
+}
+
+function getTurnDirectionLabel(reverseFlag) {
+  return reverseFlag ? 'counterclockwise' : 'clockwise';
+}
+
 function cardScore(card) {
   if (typeof card !== 'number') {
     return 0;
@@ -628,6 +660,41 @@ function emitTurnPlayer(table) {
   };
 
   io.to(table.id).emit('turnPlayer', payload);
+}
+
+function emitTurnTransition(table, transition) {
+  if (!table || !table.players || !transition) {
+    return;
+  }
+
+  table.players.forEach(function (player) {
+    const payload = {
+      action: transition.action || 'play',
+      actorId: transition.actorId || null,
+      actorName: transition.actorName || '',
+      playedCard: transition.playedCard || '',
+      playedType: transition.playedType || '',
+      colorChangedTo: transition.colorChangedTo || null,
+      skippedPlayerId: transition.skippedPlayerId || null,
+      skippedPlayerName: transition.skippedPlayerName || '',
+      direction: transition.direction || null,
+      nextPlayerId: transition.nextPlayerId || null,
+      nextPlayerName: transition.nextPlayerName || ''
+    };
+
+    if (transition.draw) {
+      payload.draw = {
+        playerId: transition.draw.playerId || null,
+        playerName: transition.draw.playerName || '',
+        count: transition.draw.count || 0,
+        cards: player.id === transition.draw.playerId && Array.isArray(transition.draw.cards)
+          ? transition.draw.cards.slice()
+          : []
+      };
+    }
+
+    io.to(player.id).emit('turnTransition', payload);
+  });
 }
 
 function advanceTurn(table, steps) {
@@ -1291,9 +1358,9 @@ function onConnection(socket) {
     const card = parseInt(table.game.deck.shift(), 10);
     currentPlayer.hand.push(card);
     io.to(currentPlayer.id).emit('haveCard', currentPlayer.hand);
-    socket.to(table.id).emit('playerDrewCard', { playerName: currentPlayer.name });
 
     if (canPlayCardOnBoard(table, card)) {
+      socket.to(table.id).emit('playerDrewCard', { playerName: currentPlayer.name });
       table.game.hasDrawn = true;
       socket.emit('drawResult', {
         success: true,
@@ -1311,8 +1378,25 @@ function onConnection(socket) {
       message: 'You drew ' + describeCard(card) + '. It is not playable. Turn passes.'
     });
 
+    const nextIndex = getNextPlayerIndex(table, table.game.turn, 1);
+    const nextPlayer = table.players[nextIndex];
+    const transition = {
+      action: 'draw_pass',
+      actorId: currentPlayer.id,
+      actorName: currentPlayer.name,
+      draw: {
+        playerId: currentPlayer.id,
+        playerName: currentPlayer.name,
+        count: 1,
+        cards: [describeCardForAnnouncement(card)]
+      },
+      nextPlayerId: nextPlayer ? nextPlayer.id : null,
+      nextPlayerName: nextPlayer ? nextPlayer.name : ''
+    };
+
     advanceTurn(table, 1);
     emitTableState(table);
+    emitTurnTransition(table, transition);
     emitTurnPlayer(table);
   });
 
@@ -1392,6 +1476,9 @@ function onConnection(socket) {
     }
 
     let turnSteps = 1;
+    let drawEffect = null;
+    let skippedPlayer = null;
+    let directionLabel = null;
 
     if (type === 'Draw2' || type === 'Draw4') {
       const drawCount = type === 'Draw2' ? 2 : 4;
@@ -1402,61 +1489,65 @@ function onConnection(socket) {
       io.to(targetPlayer.id).emit('haveCard', targetPlayer.hand);
 
       turnSteps = 2;
-      const nextIndex = getNextPlayerIndex(table, currentPlayerIndex, turnSteps);
-      const nextPlayerName = table.players[nextIndex].name;
       const cardTypeName = type === 'Draw2' ? 'Draw Two' : 'Wild Draw Four';
       const drawWord = type === 'Draw2' ? 'two' : 'four';
-      const colorLabel = capitalizeWord(table.game.chosenColor || cardColor(card));
       const drawnDescriptions = drawnCards.map(function (drawnCard) {
-        return describeCard(drawnCard);
+        return describeCardForAnnouncement(drawnCard);
       });
-      const drawnList = drawnDescriptions.length > 1
-        ? drawnDescriptions.slice(0, -1).join(', ') + ' and ' + drawnDescriptions[drawnDescriptions.length - 1]
-        : drawnDescriptions[0];
+
+      drawEffect = {
+        playerId: targetPlayer.id,
+        playerName: targetPlayer.name,
+        count: drawCount,
+        cards: drawnDescriptions
+      };
 
       socket.emit('playResult', {
         success: true,
         card: card,
         message: 'You play a ' + cardTypeName + ' and ' + targetPlayer.name + ' draws ' + drawWord + ' cards.'
       });
-
-      io.to(targetPlayer.id).emit('forcedDraw', {
-        playerName: currentPlayer.name,
-        cardTypeName: cardTypeName,
-        color: colorLabel,
-        drawnList: drawnList,
-        nextPlayerName: nextPlayerName
-      });
-
-      table.players.forEach(function (player) {
-        if (player.id === currentPlayer.id || player.id === targetPlayer.id) {
-          return;
-        }
-
-        io.to(player.id).emit('forcedDrawOthers', {
-          playerName: currentPlayer.name,
-          targetName: targetPlayer.name,
-          cardTypeName: cardTypeName,
-          color: colorLabel,
-          drawWord: drawWord
-        });
-      });
     } else {
       socket.emit('playResult', { success: true, card: card, message: 'You play a ' + cardDescription + '.' });
-      socket.to(table.id).emit('cardPlayed', { description: cardDescription });
 
       if (type === 'Skip') {
         turnSteps = 2;
+        const skippedIndex = getNextPlayerIndex(table, currentPlayerIndex, 1);
+        skippedPlayer = table.players[skippedIndex] || null;
       } else if (type === 'Reverse') {
         table.game.reverse = (table.game.reverse + 1) % 2;
+        directionLabel = getTurnDirectionLabel(table.game.reverse);
         if (table.players.length === 2) {
           turnSteps = 2;
         }
       }
     }
 
+    const nextIndex = getNextPlayerIndex(table, currentPlayerIndex, turnSteps);
+    const nextPlayer = table.players[nextIndex];
+    const transition = {
+      action: 'play',
+      actorId: currentPlayer.id,
+      actorName: currentPlayer.name,
+      playedCard: describeCardForAnnouncement(card, table.game.chosenColor),
+      playedType: type,
+      colorChangedTo: isWild ? capitalizeWord(chosenColor) : null,
+      direction: directionLabel,
+      nextPlayerId: nextPlayer ? nextPlayer.id : null,
+      nextPlayerName: nextPlayer ? nextPlayer.name : ''
+    };
+
+    if (drawEffect) {
+      transition.draw = drawEffect;
+    }
+    if (skippedPlayer) {
+      transition.skippedPlayerId = skippedPlayer.id;
+      transition.skippedPlayerName = skippedPlayer.name;
+    }
+
     advanceTurn(table, turnSteps);
     emitTableState(table);
+    emitTurnTransition(table, transition);
     emitTurnPlayer(table);
   });
 

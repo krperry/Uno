@@ -44,6 +44,8 @@ const appState = {
   currentTurnPlayerId: null,
   currentTurnPlayerName: '',
   currentTurnTopDiscard: '',
+  turnIndicatorText: '',
+  suppressTurnAnnouncementForPlayerId: null,
   lastAnnouncedTurnPlayerId: null,
   announcementTimer: null,
   announcementOpen: false,
@@ -144,6 +146,13 @@ function speakCurrentTurnBrief() {
   srSpeak(turnOwner + '. ' + discardText + ' shown', 'assertive', { canInterruptLock: true });
 }
 
+function capitalizeWord(word) {
+  if (typeof word !== 'string' || !word) {
+    return '';
+  }
+  return word.charAt(0).toUpperCase() + word.slice(1);
+}
+
 function playTone(frequency, durationMs) {
   try {
     if (!audioContext) {
@@ -228,6 +237,8 @@ function resetLoggedInState() {
   appState.gameStatus = 'waiting';
   appState.isHost = false;
   appState.currentTurnPlayerId = null;
+  appState.turnIndicatorText = '';
+  appState.suppressTurnAnnouncementForPlayerId = null;
 }
 
 function showGamePicker() {
@@ -1105,22 +1116,72 @@ function drawDeckBack() {
   ctx.drawImage(back, canvas.width - cdWidth / 2 - 60, canvas.height / 2 - cdHeight / 4, cdWidth / 2, cdHeight / 2);
 }
 
+function drawRoundedRectPath(x, y, width, height, radius) {
+  const r = Math.min(radius, width / 2, height / 2);
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.lineTo(x + width - r, y);
+  ctx.quadraticCurveTo(x + width, y, x + width, y + r);
+  ctx.lineTo(x + width, y + height - r);
+  ctx.quadraticCurveTo(x + width, y + height, x + width - r, y + height);
+  ctx.lineTo(x + r, y + height);
+  ctx.quadraticCurveTo(x, y + height, x, y + height - r);
+  ctx.lineTo(x, y + r);
+  ctx.quadraticCurveTo(x, y, x + r, y);
+  ctx.closePath();
+}
+
 function drawTurnIndicator(text) {
   const centerX = canvas.width / 2;
-  const bandTop = canvas.height / 2 - cdHeight / 4 - 40;
-  const bandHeight = 32;
+  const bandTop = canvas.height / 2 - cdHeight / 4 - 56;
+  const bandHeight = 38;
+  const wildLabelTop = bandTop - 28;
+  const wildColorLabel = (typeof appState.discard === 'number'
+    && cardColor(appState.discard) === 'black'
+    && appState.discardChosenColor)
+    ? ('Wild color: ' + capitalizeWord(appState.discardChosenColor))
+    : '';
 
-  ctx.clearRect(centerX - 220, bandTop, 440, bandHeight);
+  ctx.clearRect(centerX - 250, wildLabelTop - 6, 500, bandHeight + 72);
+
+  if (!text && !wildColorLabel) {
+    return;
+  }
+
+  if (wildColorLabel) {
+    ctx.save();
+    ctx.fillStyle = 'rgba(6, 31, 44, 0.9)';
+    ctx.strokeStyle = '#9ad7ff';
+    ctx.lineWidth = 2;
+    drawRoundedRectPath(centerX - 120, wildLabelTop, 240, 24, 10);
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = '#e8f7ff';
+    ctx.font = 'bold 15px "Segoe UI", "Trebuchet MS", sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(wildColorLabel, centerX, wildLabelTop + 12);
+    ctx.restore();
+  }
 
   if (!text) {
     return;
   }
 
   ctx.save();
+  ctx.fillStyle = 'rgba(9, 39, 37, 0.96)';
+  ctx.strokeStyle = '#ffd166';
+  ctx.lineWidth = 3;
+  drawRoundedRectPath(centerX - 165, bandTop, 330, bandHeight, 12);
+  ctx.fill();
+  ctx.stroke();
   ctx.fillStyle = '#ffffff';
-  ctx.font = 'bold 22px "Segoe UI", "Trebuchet MS", sans-serif';
+  ctx.strokeStyle = '#082b2a';
+  ctx.lineWidth = 5;
+  ctx.font = 'bold 24px "Segoe UI", "Trebuchet MS", sans-serif';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
+  ctx.strokeText(text, centerX, bandTop + bandHeight / 2);
   ctx.fillText(text, centerX, bandTop + bandHeight / 2);
   ctx.restore();
 }
@@ -1200,6 +1261,85 @@ function getSelectedCardDescription() {
 function describeCardForSpeech(card, forcedColor) {
   const color = cardColor(card) === 'black' && forcedColor ? forcedColor : cardColor(card);
   return cardType(card) + ' ' + color;
+}
+
+function formatCardList(cards) {
+  if (!Array.isArray(cards) || !cards.length) {
+    return '';
+  }
+  if (cards.length === 1) {
+    return cards[0];
+  }
+  return cards.slice(0, -1).join(', ') + ', and ' + cards[cards.length - 1];
+}
+
+function buildNextTurnText(playerId, playerName) {
+  if (!playerId) {
+    return '';
+  }
+  return playerId === socket.id ? 'Your turn.' : ("It's " + (playerName || 'Another player') + "'s turn.");
+}
+
+function buildTurnTransitionMessage(payload) {
+  if (!payload || !payload.actorId) {
+    return '';
+  }
+
+  const actorIsYou = payload.actorId === socket.id;
+  const actorName = payload.actorName || 'Another player';
+  const lines = [];
+  const draw = payload.draw;
+
+  if (payload.action === 'play' && payload.playedCard) {
+    lines.push((actorIsYou ? 'You play ' : (actorName + ' plays ')) + payload.playedCard + '.');
+  }
+
+  if (payload.colorChangedTo) {
+    lines.push('Color changes to ' + payload.colorChangedTo + '.');
+  }
+
+  if (draw && draw.count > 0) {
+    const drawIsYou = draw.playerId === socket.id;
+    if (drawIsYou && Array.isArray(draw.cards) && draw.cards.length) {
+      lines.push('You draw ' + formatCardList(draw.cards) + '.');
+    } else if (drawIsYou) {
+      lines.push('You draw ' + draw.count + (draw.count === 1 ? ' card.' : ' cards.'));
+    } else {
+      const targetName = draw.playerName || 'A player';
+      if (draw.count === 1) {
+        lines.push(targetName + ' draws a card.');
+      } else if (draw.count === 2) {
+        lines.push(targetName + ' draws two cards.');
+      } else if (draw.count === 4) {
+        lines.push(targetName + ' draws four cards.');
+      } else {
+        lines.push(targetName + ' draws ' + draw.count + ' cards.');
+      }
+    }
+  }
+
+  let skipMentionsNextTurn = false;
+  if (payload.skippedPlayerId && payload.nextPlayerName) {
+    if (payload.skippedPlayerId === socket.id) {
+      lines.push('Play skips you to ' + payload.nextPlayerName + '.');
+    } else {
+      lines.push('Skipping ' + (payload.skippedPlayerName || 'a player') + ' to ' + payload.nextPlayerName + '.');
+    }
+    skipMentionsNextTurn = true;
+  }
+
+  if (payload.direction) {
+    lines.push('Play direction is now ' + payload.direction + '.');
+  }
+
+  if (!skipMentionsNextTurn) {
+    const nextTurnText = buildNextTurnText(payload.nextPlayerId, payload.nextPlayerName);
+    if (nextTurnText) {
+      lines.push(nextTurnText);
+    }
+  }
+
+  return lines.join(' ');
 }
 
 function srSpeak(text, priority, options) {
@@ -1469,6 +1609,8 @@ socket.on('tableState', function (payload) {
     appState.gameStatus = 'waiting';
     appState.turn = false;
     appState.currentTurnPlayerId = null;
+    appState.turnIndicatorText = '';
+    appState.suppressTurnAnnouncementForPlayerId = null;
     appState.lastAnnouncedTurnPlayerId = null;
     appState.handBeforeDraw = null;
     closeAnnouncementOverlay(false);
@@ -1484,6 +1626,8 @@ socket.on('tableState', function (payload) {
   if (payload.table.status !== 'in_game') {
     appState.turn = false;
     appState.currentTurnPlayerId = null;
+    appState.turnIndicatorText = '';
+    appState.suppressTurnAnnouncementForPlayerId = null;
     appState.lastAnnouncedTurnPlayerId = null;
     appState.hand = [];
     appState.handIndex = 0;
@@ -1514,15 +1658,6 @@ socket.on('starterDrawSummary', function (payload) {
   const winnerName = payload.winner && payload.winner.name ? payload.winner.name : 'A player';
   const winnerMessage = payload.message || (winnerName + ' starts the first round.');
   const message = drawLines + '. ' + winnerMessage;
-
-  showAnnouncementOverlay({
-    eyebrow: 'Round Start',
-    title: 'First starter draw',
-    message: message,
-    tone: 'info',
-    sticky: false,
-    duration: 4200
-  });
 
   setTableStatus(winnerMessage, 'info');
   srSpeak(message, 'assertive', { lockMs: 2000 });
@@ -1583,7 +1718,18 @@ socket.on('sendCard', function (payload) {
 
   drawDiscard(card);
   drawDeckBack();
-  srSpeak('Discard is ' + describeCardForSpeech(card, chosenColor), 'assertive');
+  drawTurnIndicator(appState.turnIndicatorText);
+});
+
+socket.on('turnTransition', function (payload) {
+  const message = buildTurnTransitionMessage(payload);
+  if (!message) {
+    return;
+  }
+
+  appState.suppressTurnAnnouncementForPlayerId = payload.nextPlayerId || null;
+  setTableStatus(message, payload.nextPlayerId === socket.id ? 'alert' : 'info');
+  srSpeak(message, payload.nextPlayerId === socket.id ? 'assertive' : 'polite', { canInterruptLock: true });
 });
 
 socket.on('turnPlayer', function (payload) {
@@ -1599,15 +1745,25 @@ socket.on('turnPlayer', function (payload) {
   appState.currentTurnTopDiscard = payload.topDiscard || '';
 
   const indicatorText = appState.turn ? 'Your turn' : ((payload.name || 'Another player') + "'s turn");
+  appState.turnIndicatorText = indicatorText;
   drawTurnIndicator(indicatorText);
 
   if (isNewTurn) {
     appState.lastAnnouncedTurnPlayerId = payload.id;
 
+    if (appState.suppressTurnAnnouncementForPlayerId === payload.id) {
+      appState.suppressTurnAnnouncementForPlayerId = null;
+      renderPlayerSummary();
+      return;
+    }
+
     if (appState.turn) {
-      const message = payload.mustDraw ? 'Your turn. You have no playable cards.' : 'Your turn';
+      const topDiscard = payload.topDiscard ? payload.topDiscard + ' shown.' : '';
+      const message = payload.mustDraw
+        ? 'Your turn. You have no playable cards. ' + topDiscard
+        : 'Your turn. ' + topDiscard;
       setTableStatus(message, 'alert');
-      srSpeak(message, 'assertive');
+      srSpeak(message.trim(), 'assertive');
     } else {
       setTableStatus(indicatorText, 'info');
       srSpeak(indicatorText, 'polite');
@@ -1631,7 +1787,9 @@ socket.on('playResult', function (payload) {
     return;
   }
 
-  srSpeak(payload.message || 'Play action updated', payload.success ? 'polite' : 'assertive');
+  if (!payload.success) {
+    srSpeak(payload.message || 'Play action updated', 'assertive');
+  }
 });
 
 socket.on('drawResult', function (payload) {
