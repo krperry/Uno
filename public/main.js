@@ -44,14 +44,15 @@ const appState = {
   currentTurnPlayerId: null,
   currentTurnPlayerName: '',
   currentTurnTopDiscard: '',
-  currentTurnMustDraw: false,
-  currentRoundNumber: 1,
-  currentStartingPlayerName: '',
-  currentTurnAnnouncement: '',
+  lastAnnouncedTurnPlayerId: null,
   announcementTimer: null,
   announcementOpen: false,
+  announcementKind: null,
+  pendingWildCard: null,
   speechLockUntil: 0
 };
+
+let audioContext = null;
 
 let speechRenderTimer = null;
 
@@ -82,6 +83,7 @@ const el = {
   createTableBtn: document.getElementById('create-table-btn'),
   tableMeta: document.getElementById('table-meta'),
   tableHost: document.getElementById('table-host'),
+  tableMatchSettings: document.getElementById('table-match-settings'),
   tableStatus: document.getElementById('table-status'),
   playerSummary: document.getElementById('player-summary'),
   startGameBtn: document.getElementById('start-game-btn'),
@@ -101,7 +103,13 @@ const el = {
   announcementEyebrow: document.getElementById('announcement-eyebrow'),
   announcementTitle: document.getElementById('announcement-title'),
   announcementMessage: document.getElementById('announcement-message'),
-  closeAnnouncementBtn: document.getElementById('close-announcement-btn')
+  closeAnnouncementBtn: document.getElementById('close-announcement-btn'),
+  colorPickerOverlay: document.getElementById('color-picker-overlay'),
+  colorPickerFieldset: document.getElementById('color-picker-fieldset'),
+  colorPickerConfirmBtn: document.getElementById('color-picker-confirm-btn'),
+  colorPickerCancelBtn: document.getElementById('color-picker-cancel-btn'),
+  newTableWinningScore: document.getElementById('new-table-winning-score'),
+  newTableMaxRounds: document.getElementById('new-table-max-rounds')
 };
 
 function setTableStatus(message, tone) {
@@ -125,27 +133,43 @@ function setScreen(screen) {
   render();
 }
 
-function updateCurrentTurnAnnouncement(payload) {
-  const roundLabel = payload && payload.turnNumber ? 'Round ' + payload.turnNumber + '. ' : '';
-  const starterLabel = payload && payload.startingPlayer ? 'Starting player: ' + payload.startingPlayer + '. ' : '';
-  const turnLabel = payload && payload.name ? (payload.id === socket.id ? 'Your turn' : payload.name + '\'s turn') : 'No active turn';
-  const discardLabel = payload && payload.topDiscard ? '. Top discard: ' + payload.topDiscard : '';
-  const drawLabel = payload && payload.mustDraw ? '. You have no playable card. Press D to draw.' : '';
+function speakCurrentTurnBrief() {
+  if (!appState.currentTurnPlayerName) {
+    srSpeak('No active turn', 'assertive', { canInterruptLock: true });
+    return;
+  }
 
-  appState.currentTurnAnnouncement = roundLabel + starterLabel + turnLabel + discardLabel + drawLabel;
-  appState.currentTurnPlayerName = payload && payload.name ? payload.name : '';
-  appState.currentTurnTopDiscard = payload && payload.topDiscard ? payload.topDiscard : '';
-  appState.currentTurnMustDraw = !!(payload && payload.mustDraw);
-  appState.currentRoundNumber = payload && payload.turnNumber ? payload.turnNumber : appState.currentRoundNumber;
-  appState.currentStartingPlayerName = payload && payload.startingPlayer ? payload.startingPlayer : appState.currentStartingPlayerName;
+  const discardText = appState.currentTurnTopDiscard || 'no discard yet';
+  const turnOwner = appState.turn ? 'Your turn' : ((appState.currentTurnPlayerName || 'Another player') + "'s turn");
+  srSpeak(turnOwner + '. ' + discardText + ' shown', 'assertive', { canInterruptLock: true });
 }
 
-function speakCurrentTurn() {
-  if (appState.currentTurnAnnouncement) {
-    srSpeak(appState.currentTurnAnnouncement, 'assertive', { canInterruptLock: true });
-  } else {
-    srSpeak('No active turn announcement', 'assertive', { canInterruptLock: true });
+function playTone(frequency, durationMs) {
+  try {
+    if (!audioContext) {
+      const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+      if (!AudioContextClass) {
+        return;
+      }
+      audioContext = new AudioContextClass();
+    }
+
+    const oscillator = audioContext.createOscillator();
+    const gain = audioContext.createGain();
+    oscillator.type = 'sine';
+    oscillator.frequency.value = frequency;
+    gain.gain.value = 0.2;
+    oscillator.connect(gain);
+    gain.connect(audioContext.destination);
+    oscillator.start();
+    oscillator.stop(audioContext.currentTime + durationMs / 1000);
+  } catch (error) {
+    console.warn('Unable to play tone', error);
   }
+}
+
+function playErrorTone() {
+  playTone(430, 250);
 }
 
 function clearRememberedLogin() {
@@ -314,7 +338,20 @@ function bindUi() {
     selectGame('cribbage');
   });
   el.closeHelpBtn.addEventListener('click', closeHelpOverlay);
-  el.closeAnnouncementBtn.addEventListener('click', closeAnnouncementOverlay);
+  el.closeAnnouncementBtn.addEventListener('click', function () {
+    closeAnnouncementOverlay();
+  });
+  el.colorPickerConfirmBtn.addEventListener('click', confirmColorPicker);
+  el.colorPickerCancelBtn.addEventListener('click', cancelColorPicker);
+  el.colorPickerOverlay.addEventListener('keydown', function (event) {
+    if (event.key === 'Enter') {
+      confirmColorPicker();
+      event.preventDefault();
+    } else if (event.key === 'Escape') {
+      cancelColorPicker();
+      event.preventDefault();
+    }
+  });
 
   el.emailInput.addEventListener('keydown', function (event) {
     if (event.key === 'Enter') {
@@ -442,7 +479,15 @@ function createTable() {
     return;
   }
 
-  socket.emit('createTable', { name: tableName, gameType: selectedGame.type });
+  const winningScore = parseInt(el.newTableWinningScore && el.newTableWinningScore.value, 10);
+  const maxRounds = parseInt(el.newTableMaxRounds && el.newTableMaxRounds.value, 10);
+
+  socket.emit('createTable', {
+    name: tableName,
+    gameType: selectedGame.type,
+    winningScore: Number.isFinite(winningScore) ? winningScore : undefined,
+    maxRounds: Number.isFinite(maxRounds) ? maxRounds : undefined
+  });
 }
 
 function joinSelectedTable() {
@@ -548,6 +593,7 @@ function handleGameKeys(event) {
   }
 
   const key = (event.key || '').toLowerCase();
+  const shift = !!event.shiftKey;
   let handled = false;
   let message = '';
 
@@ -556,6 +602,8 @@ function handleGameKeys(event) {
     handled = true;
   } else if (key === 'escape' && appState.announcementOpen) {
     closeAnnouncementOverlay();
+    handled = true;
+  } else if (appState.announcementOpen && (appState.announcementKind === 'roundSummary' || appState.announcementKind === 'matchSummary')) {
     handled = true;
   } else if (key === 'escape' && appState.helpOpen) {
     closeHelpOverlay();
@@ -580,6 +628,24 @@ function handleGameKeys(event) {
       message = 'No cards in hand';
     }
     handled = true;
+  } else if (key === 'home') {
+    if (appState.hand.length) {
+      appState.handIndex = 0;
+      drawHand();
+      message = getSelectedCardDescription() + ' selected';
+    } else {
+      message = 'No cards in hand';
+    }
+    handled = true;
+  } else if (key === 'end') {
+    if (appState.hand.length) {
+      appState.handIndex = appState.hand.length - 1;
+      drawHand();
+      message = getSelectedCardDescription() + ' selected';
+    } else {
+      message = 'No cards in hand';
+    }
+    handled = true;
   } else if (key === 'enter' || key === ' ') {
     if (appState.hand.length) {
       emitPlayCard(appState.hand[appState.handIndex]);
@@ -591,18 +657,30 @@ function handleGameKeys(event) {
     emitDrawCard();
     handled = true;
   } else if (key === 't') {
-    speakCurrentTurn();
+    speakCurrentTurnBrief();
     handled = true;
   } else if (key === 'p') {
     socket.emit('requestDiscardCard');
     handled = true;
   } else if (key === 'c') {
-    message = getSelectedCardDescription();
+    message = appState.hand.length === 1
+      ? 'You have 1 card'
+      : 'You have ' + appState.hand.length + ' cards';
     handled = true;
   } else if (key === 'h') {
     message = appState.hand.length
       ? appState.hand.map(function (card) { return cardType(card) + ' ' + cardColor(card); }).join(', ')
       : 'No cards in hand';
+    handled = true;
+  } else if (key === 's' && !shift) {
+    speakOwnScore();
+    handled = true;
+  } else if (key === 's' && shift) {
+    speakAllScores();
+    handled = true;
+  } else if (key === 'r' || key === 'y' || key === 'b' || key === 'g') {
+    const colorByKey = { r: 'red', y: 'yellow', b: 'blue', g: 'green' };
+    navigateToColorExtreme(colorByKey[key], !shift);
     handled = true;
   }
 
@@ -662,6 +740,31 @@ function focusDrawnCard(card) {
   return false;
 }
 
+function getClientBoardColor() {
+  if (appState.discardChosenColor) {
+    return appState.discardChosenColor;
+  }
+  return typeof appState.discard === 'number' ? cardColor(appState.discard) : null;
+}
+
+function isWildDrawFourBlocked(card) {
+  if (cardType(card) !== 'Draw4') {
+    return false;
+  }
+
+  const boardColor = getClientBoardColor();
+  return appState.hand.some(function (handCard) {
+    return handCard !== card && cardColor(handCard) !== 'black' && cardColor(handCard) === boardColor;
+  });
+}
+
+function submitPlayCard(card, chosenColor) {
+  socket.emit('playCard', {
+    card: card,
+    chosenColor: chosenColor
+  });
+}
+
 function emitPlayCard(card) {
   if (appState.gameStatus !== 'in_game') {
     srSpeak('Game has not started yet', 'assertive');
@@ -678,21 +781,57 @@ function emitPlayCard(card) {
     return;
   }
 
-  let chosenColor = null;
-  if (cardColor(card) === 'black') {
-    chosenColor = promptForWildColor();
-    if (!chosenColor) {
-      srSpeak('Wild color selection canceled', 'assertive');
-      return;
-    }
+  if (cardColor(card) !== 'black') {
+    submitPlayCard(card, null);
+    return;
   }
 
-  socket.emit('playCard', {
-    card: card,
-    chosenColor: chosenColor
-  });
+  if (isWildDrawFourBlocked(card)) {
+    playErrorTone();
+    srSpeak('Wild Draw Four cannot be played while you hold a matching color card', 'assertive', { canInterruptLock: true });
+    return;
+  }
 
-  srSpeak('Attempting to play ' + describeCardForSpeech(card, chosenColor), 'polite');
+  openColorPicker(card);
+}
+
+function openColorPicker(card) {
+  appState.pendingWildCard = card;
+  const radios = el.colorPickerFieldset.querySelectorAll('input[type="radio"]');
+  radios.forEach(function (radio) {
+    radio.checked = radio.value === 'red';
+  });
+  el.colorPickerOverlay.classList.remove('hidden');
+  if (radios.length) {
+    radios[0].focus();
+  }
+  srSpeak('Choose a color for your Wild card', 'assertive', { canInterruptLock: true });
+}
+
+function closeColorPicker() {
+  appState.pendingWildCard = null;
+  el.colorPickerOverlay.classList.add('hidden');
+  if (appState.currentTable && appState.gameStatus === 'in_game') {
+    canvas.focus();
+  }
+}
+
+function confirmColorPicker() {
+  const card = appState.pendingWildCard;
+  if (typeof card !== 'number') {
+    closeColorPicker();
+    return;
+  }
+
+  const selected = el.colorPickerFieldset.querySelector('input[type="radio"]:checked');
+  const color = selected ? selected.value : 'red';
+  closeColorPicker();
+  submitPlayCard(card, color);
+}
+
+function cancelColorPicker() {
+  closeColorPicker();
+  srSpeak('Wild color selection canceled', 'assertive');
 }
 
 function openHelpOverlay() {
@@ -718,6 +857,7 @@ function showAnnouncementOverlay(options) {
   const tone = options && options.tone ? options.tone : 'info';
   const sticky = !!(options && options.sticky);
   const duration = options && typeof options.duration === 'number' ? options.duration : 3200;
+  const kind = (options && options.kind) || null;
 
   if (!el.announcementOverlay) {
     return;
@@ -729,6 +869,7 @@ function showAnnouncementOverlay(options) {
   }
 
   appState.announcementOpen = true;
+  appState.announcementKind = kind;
   el.announcementEyebrow.textContent = eyebrow;
   el.announcementTitle.textContent = title;
   el.announcementMessage.textContent = message;
@@ -755,8 +896,17 @@ function closeAnnouncementOverlay(restoreFocus) {
     appState.announcementTimer = null;
   }
 
+  const wasOpen = appState.announcementOpen;
+  const kind = appState.announcementKind;
+
   appState.announcementOpen = false;
+  appState.announcementKind = null;
   el.announcementOverlay.classList.add('hidden');
+
+  if (wasOpen && kind === 'roundSummary') {
+    socket.emit('ackRoundSummary');
+    setTableStatus('Waiting for other players to continue...', 'info');
+  }
 
   if (restoreFocus === false) {
     return;
@@ -789,6 +939,10 @@ function render() {
     el.gamePanel.classList.toggle('hidden', appState.gameStatus !== 'in_game');
     el.tableMeta.textContent = (appState.currentTable.gameName || 'UNO') + ': ' + appState.currentTable.name + ' - ' + (appState.gameStatus === 'in_game' ? 'In game' : 'Waiting for players');
     el.tableHost.textContent = 'Host: ' + appState.currentTable.hostName;
+    if (el.tableMatchSettings) {
+      const matchSettings = appState.currentTable.matchSettings || { winningScore: 500, maxRounds: 30 };
+      el.tableMatchSettings.textContent = 'Winning score: ' + matchSettings.winningScore + ' | Max rounds: ' + matchSettings.maxRounds;
+    }
     el.startGameBtn.disabled = !appState.isHost || appState.currentTable.players.length < 2 || appState.gameStatus === 'in_game';
     setTableStatus(appState.tableStatusMessage, appState.tableStatusTone);
 
@@ -850,7 +1004,6 @@ function renderPlayerSummary() {
     const isCurrentTurn = appState.gameStatus === 'in_game' && player.id === appState.currentTurnPlayerId;
     const hasUno = appState.gameStatus === 'in_game' && player.cardCount === 1;
     const tags = [];
-    const roundPoints = typeof player.roundPoints === 'number' ? player.roundPoints : 0;
     const totalPoints = typeof player.score === 'number' ? player.score : 0;
 
     if (player.id === appState.currentTable.hostId) {
@@ -869,7 +1022,7 @@ function renderPlayerSummary() {
     }
 
     const countText = appState.gameStatus === 'in_game'
-      ? 'Cards: ' + player.cardCount + ' | Round: ' + roundPoints + ' | Total: ' + totalPoints
+      ? 'Cards: ' + player.cardCount + ' | Total: ' + totalPoints
       : 'Score: ' + totalPoints;
     const tagText = tags.length ? ' (' + tags.join(', ') + ')' : '';
 
@@ -952,16 +1105,86 @@ function drawDeckBack() {
   ctx.drawImage(back, canvas.width - cdWidth / 2 - 60, canvas.height / 2 - cdHeight / 4, cdWidth / 2, cdHeight / 2);
 }
 
-function drawTurnArrow() {
-  const x = 100;
-  const y = 350;
-  ctx.fillStyle = '#c0392b';
-  ctx.fillRect(x - 5, y - 10, 10, 20);
-  ctx.beginPath();
-  ctx.moveTo(x - 15, y + 10);
-  ctx.lineTo(x + 15, y + 10);
-  ctx.lineTo(x, y + 30);
-  ctx.fill();
+function drawTurnIndicator(text) {
+  const centerX = canvas.width / 2;
+  const bandTop = canvas.height / 2 - cdHeight / 4 - 40;
+  const bandHeight = 32;
+
+  ctx.clearRect(centerX - 220, bandTop, 440, bandHeight);
+
+  if (!text) {
+    return;
+  }
+
+  ctx.save();
+  ctx.fillStyle = '#ffffff';
+  ctx.font = 'bold 22px "Segoe UI", "Trebuchet MS", sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(text, centerX, bandTop + bandHeight / 2);
+  ctx.restore();
+}
+
+function getOwnPlayerEntry() {
+  if (!appState.currentTable) {
+    return null;
+  }
+  return appState.currentTable.players.find(function (player) {
+    return player.id === socket.id;
+  }) || null;
+}
+
+function speakOwnScore() {
+  const player = getOwnPlayerEntry();
+  const score = player && typeof player.score === 'number' ? player.score : 0;
+  srSpeak('Your score is ' + score + (score === 1 ? ' point' : ' points'), 'assertive', { canInterruptLock: true });
+}
+
+function speakAllScores() {
+  if (!appState.currentTable || !appState.currentTable.players.length) {
+    srSpeak('No score data available', 'assertive', { canInterruptLock: true });
+    return;
+  }
+
+  const sorted = appState.currentTable.players.slice().sort(function (a, b) {
+    return (b.score || 0) - (a.score || 0);
+  });
+  const text = sorted.map(function (player) {
+    return player.name + ' ' + (player.score || 0);
+  }).join('. ');
+
+  srSpeak(text, 'assertive', { canInterruptLock: true });
+}
+
+function getHandRank(card) {
+  return getCardKindRank(card) * 100 + getCardValueSortRank(card);
+}
+
+function navigateToColorExtreme(color, wantHighest) {
+  let bestIndex = -1;
+  let bestRank = null;
+
+  for (let i = 0; i < appState.hand.length; i++) {
+    if (cardColor(appState.hand[i]) !== color) {
+      continue;
+    }
+
+    const rank = getHandRank(appState.hand[i]);
+    if (bestIndex === -1 || (wantHighest ? rank > bestRank : rank < bestRank)) {
+      bestIndex = i;
+      bestRank = rank;
+    }
+  }
+
+  if (bestIndex === -1) {
+    playErrorTone();
+    return false;
+  }
+
+  appState.handIndex = bestIndex;
+  drawHand();
+  srSpeak(getSelectedCardDescription() + ' selected', 'assertive', { canInterruptLock: true });
+  return true;
 }
 
 function getSelectedCardDescription() {
@@ -977,35 +1200,6 @@ function getSelectedCardDescription() {
 function describeCardForSpeech(card, forcedColor) {
   const color = cardColor(card) === 'black' && forcedColor ? forcedColor : cardColor(card);
   return cardType(card) + ' ' + color;
-}
-
-function promptForWildColor() {
-  const validColors = ['red', 'yellow', 'green', 'blue'];
-  for (let attempt = 0; attempt < 3; attempt++) {
-    const answer = prompt('Choose a color: red, yellow, green, or blue', 'red');
-    if (answer === null) {
-      continue;
-    }
-
-    const normalized = answer.trim().toLowerCase();
-    if (validColors.indexOf(normalized) !== -1) {
-      return normalized;
-    }
-    if (normalized === 'r') {
-      return 'red';
-    }
-    if (normalized === 'y') {
-      return 'yellow';
-    }
-    if (normalized === 'g') {
-      return 'green';
-    }
-    if (normalized === 'b') {
-      return 'blue';
-    }
-  }
-
-  return null;
 }
 
 function srSpeak(text, priority, options) {
@@ -1275,6 +1469,7 @@ socket.on('tableState', function (payload) {
     appState.gameStatus = 'waiting';
     appState.turn = false;
     appState.currentTurnPlayerId = null;
+    appState.lastAnnouncedTurnPlayerId = null;
     appState.handBeforeDraw = null;
     closeAnnouncementOverlay(false);
     render();
@@ -1289,6 +1484,7 @@ socket.on('tableState', function (payload) {
   if (payload.table.status !== 'in_game') {
     appState.turn = false;
     appState.currentTurnPlayerId = null;
+    appState.lastAnnouncedTurnPlayerId = null;
     appState.hand = [];
     appState.handIndex = 0;
     appState.handBeforeDraw = null;
@@ -1395,17 +1591,27 @@ socket.on('turnPlayer', function (payload) {
     return;
   }
 
+  const isNewTurn = payload.id !== appState.lastAnnouncedTurnPlayerId;
+
   appState.currentTurnPlayerId = payload.id;
   appState.turn = payload.id === socket.id;
-  updateCurrentTurnAnnouncement(payload);
+  appState.currentTurnPlayerName = payload.name || '';
+  appState.currentTurnTopDiscard = payload.topDiscard || '';
 
-  if (appState.turn) {
-    drawTurnArrow();
-    setTableStatus(appState.currentTurnAnnouncement || 'Your turn', 'alert');
-    srSpeak(appState.currentTurnAnnouncement || 'Your turn', 'assertive');
-  } else {
-    setTableStatus(appState.currentTurnAnnouncement || ((payload.name || 'Another player') + "'s turn."), 'info');
-    srSpeak(appState.currentTurnAnnouncement || ((payload.name || 'Another player') + ' is taking a turn'), 'polite');
+  const indicatorText = appState.turn ? 'Your turn' : ((payload.name || 'Another player') + "'s turn");
+  drawTurnIndicator(indicatorText);
+
+  if (isNewTurn) {
+    appState.lastAnnouncedTurnPlayerId = payload.id;
+
+    if (appState.turn) {
+      const message = payload.mustDraw ? 'Your turn. You have no playable cards.' : 'Your turn';
+      setTableStatus(message, 'alert');
+      srSpeak(message, 'assertive');
+    } else {
+      setTableStatus(indicatorText, 'info');
+      srSpeak(indicatorText, 'polite');
+    }
   }
 
   renderPlayerSummary();
@@ -1451,12 +1657,49 @@ socket.on('drawResult', function (payload) {
   srSpeak(payload.message || 'Draw action updated', payload.success ? 'polite' : 'assertive');
 });
 
+socket.on('cardPlayed', function (payload) {
+  if (!payload || !payload.description) {
+    return;
+  }
+
+  srSpeak(payload.description + ' played.', 'polite');
+});
+
+socket.on('forcedDraw', function (payload) {
+  if (!payload) {
+    return;
+  }
+
+  const message = payload.playerName + ' plays ' + payload.cardTypeName + ' ' + payload.color + '. You draw '
+    + payload.drawnList + '. It is ' + payload.nextPlayerName + "'s turn.";
+  srSpeak(message, 'assertive', { lockMs: 2200 });
+});
+
+socket.on('forcedDrawOthers', function (payload) {
+  if (!payload) {
+    return;
+  }
+
+  const message = payload.playerName + ' plays ' + payload.cardTypeName + ' ' + payload.color + '. '
+    + payload.targetName + ' draws ' + payload.drawWord + ' cards.';
+  srSpeak(message, 'polite', { lockMs: 1600 });
+});
+
+socket.on('playerDrewCard', function (payload) {
+  if (!payload || !payload.playerName) {
+    return;
+  }
+
+  srSpeak(payload.playerName + ' draws a card.', 'polite');
+});
+
 socket.on('actionNotice', function (message) {
   if (!message) {
     return;
   }
 
-  if (/says UNO$/i.test(message)) {
+  const isUno = /says UNO$/i.test(message);
+  if (isUno) {
     showAnnouncementOverlay({
       eyebrow: 'UNO',
       title: message,
@@ -1465,18 +1708,10 @@ socket.on('actionNotice', function (message) {
       sticky: false,
       duration: 3600
     });
-  } else if (/won the game/i.test(message)) {
-    showAnnouncementOverlay({
-      eyebrow: 'Round Winner',
-      title: 'Game Over',
-      message: message,
-      tone: 'winner',
-      sticky: true
-    });
   }
 
-  setTableStatus(message, /won the game|wins the game/i.test(message) ? 'success' : 'alert');
-  srSpeak(message, 'assertive', /says UNO$/i.test(message) ? { lockMs: 1800 } : null);
+  setTableStatus(message, 'alert');
+  srSpeak(message, 'assertive', isUno ? { lockMs: 1800 } : null);
 });
 
 socket.on('roundSummary', function (summary) {
@@ -1485,29 +1720,32 @@ socket.on('roundSummary', function (summary) {
   }
 
   const scoreText = (summary.scores || []).map(function (entry) {
-    return entry.name + ': +' + entry.roundPoints + ' this round, ' + entry.totalPoints + ' total';
+    return entry.name + ': ' + entry.totalPoints + ' total';
   }).join(', ');
 
-  const msg = summary.winner + ' won round ' + (summary.roundNumber || 1) + ' for ' + summary.roundPoints + ' points.' + (scoreText ? ' Scores: ' + scoreText : '');
+  const headline = summary.winner + ' won the round for ' + summary.roundPoints + ' points.';
+  const msg = headline + (scoreText ? ' Scores: ' + scoreText : '') + ' Press Enter to continue.';
+
   appState.currentTurnPlayerId = null;
-  appState.currentTurnAnnouncement = '';
+  appState.lastAnnouncedTurnPlayerId = null;
   appState.turn = false;
   appState.hand = [];
   appState.handIndex = 0;
   appState.handBeforeDraw = null;
   appState.pendingDrawCard = null;
   drawHand();
+  drawTurnIndicator('');
   showAnnouncementOverlay({
-    eyebrow: 'Round Winner',
+    eyebrow: 'Round ' + (summary.roundNumber || 1) + ' of ' + (summary.maxRounds || 30),
     title: summary.winner + ' won the round',
     message: msg,
     tone: 'winner',
-    sticky: false,
-    duration: 4200
+    sticky: true,
+    kind: 'roundSummary'
   });
-  setTableStatus(msg, 'success');
+  setTableStatus(headline, 'success');
   renderPlayerSummary();
-  srSpeak(msg, 'assertive', { lockMs: 2200 });
+  srSpeak(headline, 'assertive', { lockMs: 2200 });
 });
 
 socket.on('matchSummary', function (summary) {
@@ -1519,16 +1757,28 @@ socket.on('matchSummary', function (summary) {
     return entry.name + ': ' + entry.totalPoints;
   }).join(', ');
 
-  const msg = summary.winner + ' reached ' + summary.score + ' points and won the match.' + (scoreText ? ' Final scores: ' + scoreText : '');
+  const reasonText = summary.reason === 'max_rounds'
+    ? ' after ' + (summary.roundNumber || '') + ' rounds.'
+    : ' by reaching ' + summary.score + ' points.';
+
+  const headline = summary.winner + ' won the match' + reasonText;
+  const msg = headline + (scoreText ? ' Final scores: ' + scoreText : '') + ' Press Enter to continue.';
+
+  appState.currentTurnPlayerId = null;
+  appState.lastAnnouncedTurnPlayerId = null;
+  appState.turn = false;
+  drawTurnIndicator('');
+
   showAnnouncementOverlay({
     eyebrow: 'Match Winner',
     title: summary.winner + ' won the match',
     message: msg,
     tone: 'winner',
-    sticky: true
+    sticky: true,
+    kind: 'matchSummary'
   });
-  setTableStatus(msg, 'success');
-  srSpeak(msg, 'assertive', { lockMs: 2500 });
+  setTableStatus(headline, 'success');
+  srSpeak(headline, 'assertive', { lockMs: 2500 });
 });
 
 init();

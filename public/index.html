@@ -70,6 +70,16 @@
         <label for="new-table-name">Create a new table</label>
         <div class="row">
           <input id="new-table-name" type="text" maxlength="40" placeholder="Table name">
+        </div>
+        <div class="row">
+          <label class="inline-label" for="new-table-winning-score">Winning score
+            <input id="new-table-winning-score" type="number" min="50" max="100000" step="1" value="500">
+          </label>
+          <label class="inline-label" for="new-table-max-rounds">Max rounds
+            <input id="new-table-max-rounds" type="number" min="1" max="1000" step="1" value="30">
+          </label>
+        </div>
+        <div class="row">
           <button id="create-table-btn" type="button">Create Table</button>
         </div>
       </section>
@@ -78,6 +88,7 @@
         <h2 id="table-title">Table</h2>
         <p id="table-meta"></p>
         <p id="table-host"></p>
+        <p id="table-match-settings"></p>
         <div id="table-status" class="table-status" aria-live="polite"></div>
         <ul id="player-summary" class="player-summary" aria-label="Players and card counts"></ul>
         <div class="row">
@@ -94,11 +105,11 @@
             role="application"
             aria-roledescription="UNO game board"
             aria-label="UNO game board"
-            aria-keyshortcuts="ArrowLeft ArrowRight D P QuestionMark Enter Space"
+            aria-keyshortcuts="ArrowLeft ArrowRight Home End D P T C S R Y B G QuestionMark Enter Space"
             aria-describedby="game-help"
           ></canvas>
           <p id="game-help" class="visually-hidden">
-            Use mouse or touch to play cards and draw from the pile. Keyboard shortcuts on the game board: left and right arrows move between cards, Enter or Space plays selected card, D draws a card, P reads the top discard, question mark opens keyboard help.
+            Use mouse or touch to play cards and draw from the pile. Keyboard shortcuts on the game board: left and right arrows move between cards, Home and End jump to the first or last card, Enter or Space plays selected card, D draws a card, P reads the top discard, T announces whose turn it is and the discard, C announces your card count, S announces your score, Shift+S announces every score, R Y B G jump to the highest card of that color, Shift with those keys jumps to the lowest, question mark opens keyboard help.
           </p>
           <p class="hint">Mouse, touch, and keyboard are all supported.</p>
         </div>
@@ -111,11 +122,20 @@
         <ul>
           <li>Left Arrow: select previous card</li>
           <li>Right Arrow: select next card</li>
+          <li>Home: select first card</li>
+          <li>End: select last card</li>
           <li>Enter or Space: play selected card</li>
           <li>D: draw a card</li>
           <li>P: announce top discard card</li>
-          <li>C: announce selected card</li>
+          <li>T: announce whose turn it is and the top discard</li>
+          <li>C: announce how many cards are in your hand</li>
           <li>H: announce your full hand</li>
+          <li>S: announce your score</li>
+          <li>Shift+S: announce every player's score, highest to lowest</li>
+          <li>R / Shift+R: select highest / lowest red card</li>
+          <li>Y / Shift+Y: select highest / lowest yellow card</li>
+          <li>B / Shift+B: select highest / lowest blue card</li>
+          <li>G / Shift+G: select highest / lowest green card</li>
           <li>?: open this help</li>
           <li>Escape: close this help</li>
         </ul>
@@ -128,7 +148,37 @@
         <p id="announcement-eyebrow" class="announcement-eyebrow"></p>
         <h2 id="announcement-title"></h2>
         <p id="announcement-message" class="announcement-message"></p>
-        <button id="close-announcement-btn" type="button">Close</button>
+        <button id="close-announcement-btn" type="button">Continue</button>
+      </div>
+    </div>
+
+    <div id="color-picker-overlay" class="overlay hidden" role="dialog" aria-modal="true" aria-labelledby="color-picker-title">
+      <div class="overlay-card">
+        <h2 id="color-picker-title">Choose a color</h2>
+        <p>Pick the color for your Wild card, then press Enter or select Confirm.</p>
+        <fieldset id="color-picker-fieldset">
+          <legend class="visually-hidden">Wild card color</legend>
+          <label class="color-option color-option-red">
+            <input type="radio" name="wild-color" value="red" checked>
+            Red
+          </label>
+          <label class="color-option color-option-yellow">
+            <input type="radio" name="wild-color" value="yellow">
+            Yellow
+          </label>
+          <label class="color-option color-option-green">
+            <input type="radio" name="wild-color" value="green">
+            Green
+          </label>
+          <label class="color-option color-option-blue">
+            <input type="radio" name="wild-color" value="blue">
+            Blue
+          </label>
+        </fieldset>
+        <div class="row">
+          <button id="color-picker-confirm-btn" type="button">Confirm</button>
+          <button id="color-picker-cancel-btn" type="button">Cancel</button>
+        </div>
       </div>
     </div>
 

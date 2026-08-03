@@ -6,10 +6,15 @@ const app = express();
 const http = require('http').Server(app);
 const io = require('socket.io')(http);
 
-const port = process.env.PORT || 3000;
+const port = process.env.PORT || 4123;
 const MAX_TABLE_PLAYERS = 6;
 const MIN_TABLE_PLAYERS = 2;
 const MATCH_POINTS_TO_WIN = 500;
+const DEFAULT_MAX_ROUNDS = 30;
+const MIN_WINNING_SCORE = 50;
+const MAX_WINNING_SCORE = 100000;
+const MIN_MAX_ROUNDS = 1;
+const MAX_MAX_ROUNDS = 1000;
 const ACCOUNT_FILE_PATH = path.join(__dirname, 'data', 'accounts.json');
 const DEFAULT_GAME_TYPE = 'uno';
 const GAME_DEFINITIONS = {
@@ -132,6 +137,21 @@ function getGameDefinition(gameType) {
   return GAME_DEFINITIONS[normalizeGameType(gameType)] || GAME_DEFINITIONS[DEFAULT_GAME_TYPE];
 }
 
+function clampInteger(value, min, max, fallback) {
+  const parsed = parseInt(value, 10);
+  if (!Number.isFinite(parsed)) {
+    return fallback;
+  }
+  return Math.min(max, Math.max(min, parsed));
+}
+
+function normalizeMatchSettings(payload) {
+  return {
+    winningScore: clampInteger(payload && payload.winningScore, MIN_WINNING_SCORE, MAX_WINNING_SCORE, MATCH_POINTS_TO_WIN),
+    maxRounds: clampInteger(payload && payload.maxRounds, MIN_MAX_ROUNDS, MAX_MAX_ROUNDS, DEFAULT_MAX_ROUNDS)
+  };
+}
+
 function normalizeIndex(index, count) {
   if (count <= 0) {
     return 0;
@@ -142,7 +162,8 @@ function normalizeIndex(index, count) {
 }
 
 function getNextPlayerIndex(table, currentIndex, steps) {
-  return normalizeIndex(currentIndex + steps, table.players.length);
+  const direction = table.game && table.game.reverse ? -1 : 1;
+  return normalizeIndex(currentIndex + steps * direction, table.players.length);
 }
 
 function getPlayerIndex(table, socketId) {
@@ -176,14 +197,16 @@ function createDeck() {
     }
   }
 
+  // Wild cards: one per color slot (all render identically), floor(card/14) < 4
+  // so cardType() classifies them as 'Wild'. Four total, matching a real UNO deck.
   for (let color = 0; color < 4; color++) {
-    deck.push(4 * 14 + color * 2 + 13);
-    deck.push(4 * 14 + color * 2 + 13);
+    deck.push(color * 14 + 13);
   }
 
+  // Wild Draw Four: floor(card/14) >= 4 so cardType() classifies them as 'Draw4'.
+  // Four total, matching a real UNO deck.
   for (let color = 0; color < 4; color++) {
-    deck.push(4 * 14 + color + 13);
-    deck.push(4 * 14 + color + 13);
+    deck.push((4 + color) * 14 + 13);
   }
 
   return deck;
@@ -279,6 +302,13 @@ function cardType(card) {
   }
 }
 
+function capitalizeWord(word) {
+  if (typeof word !== 'string' || !word) {
+    return '';
+  }
+  return word.charAt(0).toUpperCase() + word.slice(1);
+}
+
 function describeCard(card, chosenColor) {
   if (typeof card !== 'number') {
     return 'No card';
@@ -358,90 +388,6 @@ function findAccountByRememberToken(token) {
     return account.rememberTokenHash === tokenHash;
   }) || null;
 }
-function calculateRoundPoints(table, winnerIndex) {
-  let points = 0;
-  for (let i = 0; i < table.players.length; i++) {
-    if (i === winnerIndex) {
-      continue;
-    }
-
-    table.players[i].hand.forEach(function (card) {
-      points += cardScore(card);
-    });
-  }
-  return points;
-}
-
-function endRound(table, winnerIndex, reason) {
-  if (!table.players[winnerIndex]) {
-    return;
-  }
-
-  const winnerName = table.players[winnerIndex].name;
-  const roundPoints = calculateRoundPoints(table, winnerIndex);
-  table.scores[winnerName] = (table.scores[winnerName] || 0) + roundPoints;
-
-  table.game.lastRoundPoints = {};
-  table.players.forEach(function (player) {
-    table.game.lastRoundPoints[player.name] = player.hand.reduce(function (sum, card) {
-      return sum + cardScore(card);
-    }, 0);
-  });
-
-  const scoreboard = buildScoreboard(table);
-  const matchWinner = scoreboard.find(function (entry) {
-    return entry.totalPoints >= MATCH_POINTS_TO_WIN;
-  }) || null;
-
-  io.to(table.id).emit('roundSummary', {
-    winner: winnerName,
-    roundPoints: roundPoints,
-    scores: scoreboard,
-    reason: reason || 'round_end',
-    matchWinner: matchWinner,
-    roundNumber: table.game.roundNumber || 1
-  });
-
-  io.to(table.id).emit('actionNotice', winnerName + ' won the round for ' + roundPoints + ' points.');
-
-  table.players.forEach(function (player) {
-    player.hand = [];
-  });
-
-  emitTableState(table);
-  emitLobbySnapshotAll();
-
-  if (matchWinner) {
-    io.to(table.id).emit('matchSummary', {
-      winner: matchWinner.name,
-      score: matchWinner.totalPoints,
-      scores: scoreboard,
-      reason: reason || 'match_complete'
-    });
-    io.to(table.id).emit('actionNotice', matchWinner.name + ' won the match with ' + matchWinner.totalPoints + ' points.');
-    table.status = 'waiting';
-    table.game = null;
-    emitTableState(table);
-    emitLobbySnapshotAll();
-    return;
-  }
-
-  table.game.locked = true;
-  table.game.roundNumber = (table.game.roundNumber || 1) + 1;
-  table.game.startingPlayerIndex = normalizeIndex(table.game.startingPlayerIndex + 1, table.players.length);
-
-  setTimeout(function () {
-    if (!table.game || table.status !== 'in_game') {
-      return;
-    }
-
-    beginRound(table, {
-      isFirstRound: false,
-      announceStarter: false
-    });
-  }, 1800);
-}
-
 function initializeGameState(table) {
   table.game = {
     deck: createDeck(),
@@ -616,6 +562,7 @@ function buildTableState(table, socketId) {
       hostId: table.hostId,
       hostName: table.hostName,
       status: table.status,
+      matchSettings: table.matchSettings || { winningScore: MATCH_POINTS_TO_WIN, maxRounds: DEFAULT_MAX_ROUNDS },
       players: table.players.map(function (player) {
         return {
           id: player.id,
@@ -677,9 +624,7 @@ function emitTurnPlayer(table) {
     name: currentPlayer.name,
     canPlay: canPlay,
     mustDraw: !canPlay,
-    topDiscard: describeCard(table.game.cardOnBoard, table.game.chosenColor),
-    startingPlayer: table.players[table.game.startingPlayerIndex] ? table.players[table.game.startingPlayerIndex].name : currentPlayer.name,
-    turnNumber: table.game.roundNumber || 1
+    topDiscard: describeCard(table.game.cardOnBoard, table.game.chosenColor)
   };
 
   io.to(table.id).emit('turnPlayer', payload);
@@ -733,11 +678,28 @@ function getRoundPoints(table, playerName) {
   return typeof table.game.lastRoundPoints[playerName] === 'number' ? table.game.lastRoundPoints[playerName] : 0;
 }
 
+function tryBeginNextRound(table) {
+  if (!table.game || !table.game.pendingRoundAcks) {
+    return;
+  }
+
+  if (Object.keys(table.game.pendingRoundAcks).length > 0 || table.status !== 'in_game') {
+    return;
+  }
+
+  table.game.pendingRoundAcks = null;
+  beginRound(table, {
+    isFirstRound: false,
+    announceStarter: false
+  });
+}
+
 function endRound(table, winnerIndex, reason) {
   if (!table.players[winnerIndex]) {
     return;
   }
 
+  const matchSettings = table.matchSettings || { winningScore: MATCH_POINTS_TO_WIN, maxRounds: DEFAULT_MAX_ROUNDS };
   const winnerName = table.players[winnerIndex].name;
   const roundPoints = calculateRoundPoints(table, winnerIndex);
   table.scores[winnerName] = (table.scores[winnerName] || 0) + roundPoints;
@@ -749,10 +711,14 @@ function endRound(table, winnerIndex, reason) {
     }, 0);
   });
 
+  const roundNumber = table.game.roundNumber || 1;
   const scoreboard = buildScoreboard(table);
-  const matchWinner = scoreboard.find(function (entry) {
-    return entry.totalPoints >= MATCH_POINTS_TO_WIN;
+  const scoreWinner = scoreboard.find(function (entry) {
+    return entry.totalPoints >= matchSettings.winningScore;
   }) || null;
+  const roundsExhausted = roundNumber >= matchSettings.maxRounds;
+  const matchWinner = scoreWinner || (roundsExhausted ? scoreboard[0] : null);
+  const matchEndReason = scoreWinner ? 'winning_score' : (roundsExhausted ? 'max_rounds' : null);
 
   io.to(table.id).emit('roundSummary', {
     winner: winnerName,
@@ -760,10 +726,9 @@ function endRound(table, winnerIndex, reason) {
     scores: scoreboard,
     reason: reason || 'round_end',
     matchWinner: matchWinner,
-    roundNumber: table.game.roundNumber || 1
+    roundNumber: roundNumber,
+    maxRounds: matchSettings.maxRounds
   });
-
-  io.to(table.id).emit('actionNotice', winnerName + ' won the round for ' + roundPoints + ' points.');
 
   table.players.forEach(function (player) {
     player.hand = [];
@@ -777,9 +742,9 @@ function endRound(table, winnerIndex, reason) {
       winner: matchWinner.name,
       score: matchWinner.totalPoints,
       scores: scoreboard,
-      reason: reason || 'match_complete'
+      reason: matchEndReason,
+      roundNumber: roundNumber
     });
-    io.to(table.id).emit('actionNotice', matchWinner.name + ' won the match with ' + matchWinner.totalPoints + ' points.');
     table.status = 'waiting';
     table.game = null;
     emitTableState(table);
@@ -788,19 +753,12 @@ function endRound(table, winnerIndex, reason) {
   }
 
   table.game.locked = true;
-  table.game.roundNumber = (table.game.roundNumber || 1) + 1;
+  table.game.roundNumber = roundNumber + 1;
   table.game.startingPlayerIndex = normalizeIndex(table.game.startingPlayerIndex + 1, table.players.length);
-
-  setTimeout(function () {
-    if (!table.game || table.status !== 'in_game') {
-      return;
-    }
-
-    beginRound(table, {
-      isFirstRound: false,
-      announceStarter: false
-    });
-  }, 1800);
+  table.game.pendingRoundAcks = {};
+  table.players.forEach(function (player) {
+    table.game.pendingRoundAcks[player.id] = true;
+  });
 }
 
 function assignNewHostIfNeeded(table) {
@@ -842,6 +800,11 @@ function handlePlayerRemovalFromGame(table, removedIndex, playerName) {
 
   if (removedIndex === table.game.turn && table.game.turn >= table.players.length - 1) {
     table.game.turn = 0;
+  }
+
+  if (removedPlayer && table.game.pendingRoundAcks) {
+    delete table.game.pendingRoundAcks[removedPlayer.id];
+    tryBeginNextRound(table);
   }
 
   io.to(table.id).emit('actionNotice', playerName + ' left the game');
@@ -1172,7 +1135,8 @@ function onConnection(socket) {
       players: [{ id: socket.id, name: socket.playerName, hand: [] }],
       game: null,
       scores: {},
-      dealerIndex: -1
+      dealerIndex: -1,
+      matchSettings: normalizeMatchSettings(payload)
     };
 
     table.scores[socket.playerName] = 0;
@@ -1287,6 +1251,16 @@ function onConnection(socket) {
     });
   });
 
+  socket.on('ackRoundSummary', function () {
+    const table = findTableBySocket(socket);
+    if (!table || !table.game || !table.game.pendingRoundAcks) {
+      return;
+    }
+
+    delete table.game.pendingRoundAcks[socket.id];
+    tryBeginNextRound(table);
+  });
+
   socket.on('drawCard', function () {
     const table = findTableBySocket(socket);
     if (!table || table.status !== 'in_game' || !table.game || table.game.locked) {
@@ -1317,6 +1291,7 @@ function onConnection(socket) {
     const card = parseInt(table.game.deck.shift(), 10);
     currentPlayer.hand.push(card);
     io.to(currentPlayer.id).emit('haveCard', currentPlayer.hand);
+    socket.to(table.id).emit('playerDrewCard', { playerName: currentPlayer.name });
 
     if (canPlayCardOnBoard(table, card)) {
       table.game.hasDrawn = true;
@@ -1402,41 +1377,82 @@ function onConnection(socket) {
     emitDiscardCard(table);
     io.to(currentPlayer.id).emit('haveCard', currentPlayer.hand);
 
-    socket.emit('playResult', {
-      success: true,
-      card: card,
-      message: 'Played ' + describeCard(card, table.game.chosenColor)
-    });
+    const type = cardType(card);
+    const cardDescription = describeCard(card, table.game.chosenColor);
 
     if (currentPlayer.hand.length === 1) {
       io.to(table.id).emit('actionNotice', currentPlayer.name + ' says UNO');
     }
 
     if (currentPlayer.hand.length === 0) {
+      socket.emit('playResult', { success: true, card: card, message: 'You play a ' + cardDescription + '.' });
+      socket.to(table.id).emit('cardPlayed', { description: cardDescription });
       endRound(table, currentPlayerIndex, 'all_cards_played');
       return;
     }
 
     let turnSteps = 1;
-    if (cardType(card) === 'Skip') {
+
+    if (type === 'Draw2' || type === 'Draw4') {
+      const drawCount = type === 'Draw2' ? 2 : 4;
+      const targetIndex = getNextPlayerIndex(table, currentPlayerIndex, 1);
+      const targetPlayer = table.players[targetIndex];
+      drawCardsFromDeck(table, targetIndex, drawCount);
+      const drawnCards = targetPlayer.hand.slice(-drawCount);
+      io.to(targetPlayer.id).emit('haveCard', targetPlayer.hand);
+
       turnSteps = 2;
-    } else if (cardType(card) === 'Reverse') {
-      table.game.reverse = (table.game.reverse + 1) % 2;
-      if (table.players.length === 2) {
+      const nextIndex = getNextPlayerIndex(table, currentPlayerIndex, turnSteps);
+      const nextPlayerName = table.players[nextIndex].name;
+      const cardTypeName = type === 'Draw2' ? 'Draw Two' : 'Wild Draw Four';
+      const drawWord = type === 'Draw2' ? 'two' : 'four';
+      const colorLabel = capitalizeWord(table.game.chosenColor || cardColor(card));
+      const drawnDescriptions = drawnCards.map(function (drawnCard) {
+        return describeCard(drawnCard);
+      });
+      const drawnList = drawnDescriptions.length > 1
+        ? drawnDescriptions.slice(0, -1).join(', ') + ' and ' + drawnDescriptions[drawnDescriptions.length - 1]
+        : drawnDescriptions[0];
+
+      socket.emit('playResult', {
+        success: true,
+        card: card,
+        message: 'You play a ' + cardTypeName + ' and ' + targetPlayer.name + ' draws ' + drawWord + ' cards.'
+      });
+
+      io.to(targetPlayer.id).emit('forcedDraw', {
+        playerName: currentPlayer.name,
+        cardTypeName: cardTypeName,
+        color: colorLabel,
+        drawnList: drawnList,
+        nextPlayerName: nextPlayerName
+      });
+
+      table.players.forEach(function (player) {
+        if (player.id === currentPlayer.id || player.id === targetPlayer.id) {
+          return;
+        }
+
+        io.to(player.id).emit('forcedDrawOthers', {
+          playerName: currentPlayer.name,
+          targetName: targetPlayer.name,
+          cardTypeName: cardTypeName,
+          color: colorLabel,
+          drawWord: drawWord
+        });
+      });
+    } else {
+      socket.emit('playResult', { success: true, card: card, message: 'You play a ' + cardDescription + '.' });
+      socket.to(table.id).emit('cardPlayed', { description: cardDescription });
+
+      if (type === 'Skip') {
         turnSteps = 2;
+      } else if (type === 'Reverse') {
+        table.game.reverse = (table.game.reverse + 1) % 2;
+        if (table.players.length === 2) {
+          turnSteps = 2;
+        }
       }
-    } else if (cardType(card) === 'Draw2') {
-      const targetIndex = getNextPlayerIndex(table, currentPlayerIndex, 1);
-      drawCardsFromDeck(table, targetIndex, 2);
-      io.to(table.players[targetIndex].id).emit('haveCard', table.players[targetIndex].hand);
-      io.to(table.players[targetIndex].id).emit('actionNotice', 'You draw 2 cards and lose your turn');
-      turnSteps = 2;
-    } else if (cardType(card) === 'Draw4') {
-      const targetIndex = getNextPlayerIndex(table, currentPlayerIndex, 1);
-      drawCardsFromDeck(table, targetIndex, 4);
-      io.to(table.players[targetIndex].id).emit('haveCard', table.players[targetIndex].hand);
-      io.to(table.players[targetIndex].id).emit('actionNotice', 'You draw 4 cards and lose your turn');
-      turnSteps = 2;
     }
 
     advanceTurn(table, turnSteps);
