@@ -1136,13 +1136,16 @@ function drawTurnIndicator(text) {
   const bandTop = canvas.height / 2 - cdHeight / 4 - 56;
   const bandHeight = 38;
   const wildLabelTop = bandTop - 28;
+  const clearTop = wildLabelTop - 8;
+  const clearBottom = bandTop + bandHeight + 8;
   const wildColorLabel = (typeof appState.discard === 'number'
     && cardColor(appState.discard) === 'black'
     && appState.discardChosenColor)
     ? ('Wild color: ' + capitalizeWord(appState.discardChosenColor))
     : '';
 
-  ctx.clearRect(centerX - 250, wildLabelTop - 6, 500, bandHeight + 72);
+  // Keep clearing constrained to the indicator strip so the discard card is never erased.
+  ctx.clearRect(centerX - 250, clearTop, 500, clearBottom - clearTop);
 
   if (!text && !wildColorLabel) {
     return;
