@@ -954,7 +954,10 @@ function render() {
     el.tableHost.textContent = 'Host: ' + appState.currentTable.hostName;
     if (el.tableMatchSettings) {
       const matchSettings = appState.currentTable.matchSettings || { winningScore: 500, maxRounds: 30 };
-      el.tableMatchSettings.textContent = 'Winning score: ' + matchSettings.winningScore + ' | Max rounds: ' + matchSettings.maxRounds;
+      const roundText = appState.gameStatus === 'in_game' && typeof appState.currentTable.roundNumber === 'number'
+        ? ' | This is round ' + appState.currentTable.roundNumber + ' of ' + matchSettings.maxRounds
+        : '';
+      el.tableMatchSettings.textContent = 'Winning score: ' + matchSettings.winningScore + ' | Max rounds: ' + matchSettings.maxRounds + roundText;
     }
     el.startGameBtn.disabled = !appState.isHost || appState.currentTable.players.length < 2 || appState.gameStatus === 'in_game';
     setTableStatus(appState.tableStatusMessage, appState.tableStatusTone);

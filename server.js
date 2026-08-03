@@ -594,6 +594,7 @@ function buildTableState(table, socketId) {
       hostId: table.hostId,
       hostName: table.hostName,
       status: table.status,
+      roundNumber: table.status === 'in_game' && table.game ? (table.game.roundNumber || 1) : null,
       matchSettings: table.matchSettings || { winningScore: MATCH_POINTS_TO_WIN, maxRounds: DEFAULT_MAX_ROUNDS },
       players: table.players.map(function (player) {
         return {
