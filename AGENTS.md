@@ -4,7 +4,6 @@
 
 - This is a browser-based UNO game with a Node.js + Express + Socket.IO server.
 - The active runtime entrypoints are [server.js](server.js), [public/main.js](public/main.js), [public/index.html](public/index.html), and [public/style.css](public/style.css).
-- Treat [public/main2.js](public/main2.js) and [public/main - Copy.js](public/main%20-%20Copy.js) as legacy copies unless the user explicitly asks to work on them.
 
 ## Working Conventions
 
