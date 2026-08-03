@@ -572,11 +572,13 @@ function onMouseClick(event) {
   const y = pointer.clientY - rect.top;
 
   const hand = appState.hand;
+  const handTop = getHandTopY();
+  const handBottom = getHandBottomY();
   const spacing = canvas.width / (2 + Math.max(0, hand.length - 1));
   const lastCard = (hand.length / 112) * (cdWidth / 3) + spacing * hand.length - (cdWidth / 4) + (cdWidth / 2);
   const firstCard = 2 + (hand.length / 112) * (cdWidth / 3) + spacing - (cdWidth / 4);
 
-  if (y >= 400 && y <= 580 && x >= firstCard && x <= lastCard) {
+  if (y >= handTop && y <= handBottom && x >= firstCard && x <= lastCard) {
     for (let i = 0, pos = firstCard; i < hand.length; i++, pos += spacing) {
       if (x >= pos && x <= pos + spacing) {
         appState.handIndex = i;
@@ -1062,13 +1064,14 @@ function announcePlayerSummary(table) {
 }
 
 function drawHand() {
-  ctx.clearRect(0, 400, canvas.width, canvas.height);
+  const handTop = getHandTopY();
+  ctx.clearRect(0, handTop, canvas.width, canvas.height - handTop);
 
   const hand = appState.hand;
   const selectedIndex = hand.length ? Math.max(0, Math.min(hand.length - 1, appState.handIndex)) : -1;
   for (let i = 0; i < hand.length; i++) {
     const x = (hand.length / 112) * (cdWidth / 3) + (canvas.width / (2 + (hand.length - 1))) * (i + 1) - (cdWidth / 4);
-    const y = 400;
+    const y = handTop;
 
     ctx.drawImage(
       cards,
@@ -1114,6 +1117,23 @@ function drawDiscard(cardNum) {
 
 function drawDeckBack() {
   ctx.drawImage(back, canvas.width - cdWidth / 2 - 60, canvas.height / 2 - cdHeight / 4, cdWidth / 2, cdHeight / 2);
+}
+
+function getDiscardTopY() {
+  return canvas.height / 2 - cdHeight / 4;
+}
+
+function getDiscardBottomY() {
+  return getDiscardTopY() + cdHeight / 2;
+}
+
+function getHandTopY() {
+  // Keep a small, constant gap below the discard/deck row.
+  return getDiscardBottomY() + 10;
+}
+
+function getHandBottomY() {
+  return getHandTopY() + cdHeight / 2;
 }
 
 function drawRoundedRectPath(x, y, width, height, radius) {
