@@ -1648,7 +1648,6 @@ socket.on('tableState', function (payload) {
   appState.currentTable = payload.table;
   appState.gameStatus = payload.table.status;
   appState.isHost = !!payload.youAreHost;
-  announcePlayerSummary(payload.table);
 
   if (payload.table.status !== 'in_game') {
     appState.turn = false;
@@ -1730,10 +1729,6 @@ socket.on('haveCard', function (cardsInHand) {
 
   appState.handIndex = Math.max(0, Math.min(appState.handIndex, Math.max(0, appState.hand.length - 1)));
   drawHand();
-
-  if (appState.hand.length) {
-    srSpeak(getSelectedCardDescription() + ' selected', 'polite', { canInterruptLock: true });
-  }
 });
 
 socket.on('sendCard', function (payload) {
@@ -1885,18 +1880,12 @@ socket.on('actionNotice', function (message) {
 
   const isUno = /says UNO$/i.test(message);
   if (isUno) {
-    showAnnouncementOverlay({
-      eyebrow: 'UNO',
-      title: message,
-      message: 'A player is down to one card.',
-      tone: 'uno',
-      sticky: false,
-      duration: 3600
-    });
+    // UNO is announced as part of the turnTransition narration to avoid duplicate speech.
+    return;
   }
 
   setTableStatus(message, 'alert');
-  srSpeak(message, 'assertive', isUno ? { lockMs: 1800 } : null);
+  srSpeak(message, 'assertive');
 });
 
 socket.on('roundSummary', function (summary) {
