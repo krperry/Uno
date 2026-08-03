@@ -1532,6 +1532,7 @@ function onConnection(socket) {
       playedCard: describeCardForAnnouncement(card, table.game.chosenColor),
       playedType: type,
       colorChangedTo: isWild ? capitalizeWord(chosenColor) : null,
+      actorHasUno: currentPlayer.hand.length === 1,
       direction: directionLabel,
       nextPlayerId: nextPlayer ? nextPlayer.id : null,
       nextPlayerName: nextPlayer ? nextPlayer.name : ''

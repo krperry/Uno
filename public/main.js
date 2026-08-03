@@ -1332,6 +1332,10 @@ function buildTurnTransitionMessage(payload) {
     lines.push('Play direction is now ' + payload.direction + '.');
   }
 
+  if (payload.actorHasUno) {
+    lines.push(actorIsYou ? 'You have UNO.' : (actorName + ' has UNO.'));
+  }
+
   if (!skipMentionsNextTurn) {
     const nextTurnText = buildNextTurnText(payload.nextPlayerId, payload.nextPlayerName);
     if (nextTurnText) {
