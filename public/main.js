@@ -51,6 +51,7 @@ const appState = {
   announcementOpen: false,
   announcementKind: null,
   pendingWildCard: null,
+  colorPickerReturnFocusEl: null,
   speechLockUntil: 0
 };
 
@@ -810,6 +811,9 @@ function emitPlayCard(card) {
 
 function openColorPicker(card) {
   appState.pendingWildCard = card;
+  appState.colorPickerReturnFocusEl = document.activeElement && typeof document.activeElement.focus === 'function'
+    ? document.activeElement
+    : null;
   const radios = el.colorPickerFieldset.querySelectorAll('input[type="radio"]');
   radios.forEach(function (radio) {
     radio.checked = radio.value === 'red';
@@ -821,24 +825,39 @@ function openColorPicker(card) {
   srSpeak('Choose a color for your Wild card', 'assertive', { canInterruptLock: true });
 }
 
-function closeColorPicker() {
+function closeColorPicker(restoreFocus) {
   appState.pendingWildCard = null;
   el.colorPickerOverlay.classList.add('hidden');
-  if (appState.currentTable && appState.gameStatus === 'in_game') {
-    canvas.focus();
+
+  const target = appState.colorPickerReturnFocusEl;
+  appState.colorPickerReturnFocusEl = null;
+
+  if (restoreFocus === false) {
+    return;
+  }
+
+  if (target && typeof target.focus === 'function' && document.contains(target)) {
+    target.focus();
   }
 }
 
 function confirmColorPicker() {
   const card = appState.pendingWildCard;
   if (typeof card !== 'number') {
-    closeColorPicker();
+    closeColorPicker(false);
     return;
   }
 
   const selected = el.colorPickerFieldset.querySelector('input[type="radio"]:checked');
   const color = selected ? selected.value : 'red';
-  closeColorPicker();
+  const cardDescription = describeCardForSpeech(card, color);
+  closeColorPicker(false);
+
+  if (appState.currentTable && appState.gameStatus === 'in_game') {
+    canvas.focus();
+  }
+
+  srSpeak('You play ' + cardDescription + '.', 'assertive', { canInterruptLock: true });
   submitPlayCard(card, color);
 }
 
@@ -961,10 +980,6 @@ function render() {
     }
     el.startGameBtn.disabled = !appState.isHost || appState.currentTable.players.length < 2 || appState.gameStatus === 'in_game';
     setTableStatus(appState.tableStatusMessage, appState.tableStatusTone);
-
-    if (appState.gameStatus === 'in_game') {
-      canvas.focus();
-    }
   } else {
     setTableStatus('Join a table to start playing.', 'info');
   }
@@ -1663,6 +1678,8 @@ socket.on('lobbySnapshot', function (payload) {
 });
 
 socket.on('tableState', function (payload) {
+  const wasInGame = appState.gameStatus === 'in_game';
+
   if (!payload || !payload.table) {
     appState.currentTable = null;
     appState.gameStatus = 'waiting';
@@ -1680,6 +1697,7 @@ socket.on('tableState', function (payload) {
   appState.currentTable = payload.table;
   appState.gameStatus = payload.table.status;
   appState.isHost = !!payload.youAreHost;
+  const enteredInGame = !wasInGame && appState.gameStatus === 'in_game';
 
   if (payload.table.status !== 'in_game') {
     appState.turn = false;
@@ -1703,6 +1721,12 @@ socket.on('tableState', function (payload) {
   }
 
   render();
+
+  if (enteredInGame) {
+    window.requestAnimationFrame(function () {
+      canvas.focus();
+    });
+  }
 });
 
 socket.on('starterDrawSummary', function (payload) {
