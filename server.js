@@ -309,22 +309,35 @@ function capitalizeWord(word) {
   return word.charAt(0).toUpperCase() + word.slice(1);
 }
 
+function formatCardTypeForNarration(type) {
+  if (type.indexOf('Number ') === 0) {
+    return type.replace('Number ', '');
+  }
+
+  if (type === 'Draw2') {
+    return 'Draw Two';
+  }
+
+  if (type === 'Draw4') {
+    return 'Draw Four';
+  }
+
+  return type;
+}
+
 function describeCard(card, chosenColor) {
   if (typeof card !== 'number') {
     return 'No card';
   }
 
-  const colorName = cardColor(card) === 'black' && chosenColor ? chosenColor : cardColor(card);
-  const base = cardType(card);
-  if (base === 'Number 0' || base === 'Number 1' || base === 'Number 2' || base === 'Number 3' || base === 'Number 4' || base === 'Number 5' || base === 'Number 6' || base === 'Number 7' || base === 'Number 8' || base === 'Number 9') {
-    return colorName + ' ' + base.replace('Number ', '');
-  }
+  const resolvedColor = cardColor(card) === 'black' ? chosenColor : cardColor(card);
+  const formattedType = formatCardTypeForNarration(cardType(card));
 
   if (cardColor(card) === 'black') {
-    return base + ' (' + colorName + ')';
+    return resolvedColor ? (formattedType + ' ' + resolvedColor) : formattedType;
   }
 
-  return colorName + ' ' + base;
+  return formattedType + ' ' + resolvedColor;
 }
 
 function describeCardForAnnouncement(card, chosenColor) {
@@ -332,27 +345,7 @@ function describeCardForAnnouncement(card, chosenColor) {
     return 'No card';
   }
 
-  const type = cardType(card);
-  const resolvedColor = cardColor(card) === 'black' ? chosenColor : cardColor(card);
-  const colorLabel = capitalizeWord(resolvedColor || '');
-
-  if (type.indexOf('Number ') === 0) {
-    return colorLabel + ' ' + type.replace('Number ', '');
-  }
-
-  if (type === 'Draw2') {
-    return colorLabel + ' Draw Two';
-  }
-
-  if (type === 'Draw4') {
-    return 'Wild Draw Four';
-  }
-
-  if (type === 'Wild') {
-    return 'Wild';
-  }
-
-  return colorLabel + ' ' + type;
+  return describeCard(card, chosenColor);
 }
 
 function getTurnDirectionLabel(reverseFlag) {
@@ -675,6 +668,7 @@ function emitTurnTransition(table, transition) {
       actorName: transition.actorName || '',
       playedCard: transition.playedCard || '',
       playedType: transition.playedType || '',
+      actorHasUno: !!transition.actorHasUno,
       colorChangedTo: transition.colorChangedTo || null,
       skippedPlayerId: transition.skippedPlayerId || null,
       skippedPlayerName: transition.skippedPlayerName || '',

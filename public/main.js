@@ -682,7 +682,7 @@ function handleGameKeys(event) {
     handled = true;
   } else if (key === 'h') {
     message = appState.hand.length
-      ? appState.hand.map(function (card) { return cardType(card) + ' ' + cardColor(card); }).join(', ')
+      ? appState.hand.map(function (card) { return describeCardForSpeech(card); }).join(', ')
       : 'No cards in hand';
     handled = true;
   } else if (key === 's' && !shift) {
@@ -1016,6 +1016,7 @@ function renderPlayerSummary() {
   appState.currentTable.players.forEach(function (player) {
     const li = document.createElement('li');
     const label = document.createElement('span');
+    const unoBadge = document.createElement('span');
     const details = document.createElement('span');
     const isCurrentTurn = appState.gameStatus === 'in_game' && player.id === appState.currentTurnPlayerId;
     const hasUno = appState.gameStatus === 'in_game' && player.cardCount === 1;
@@ -1044,6 +1045,12 @@ function renderPlayerSummary() {
 
     label.className = 'player-label';
     label.textContent = player.name;
+    if (hasUno) {
+      unoBadge.className = 'uno-badge';
+      unoBadge.textContent = 'UNO';
+      label.appendChild(document.createTextNode(' '));
+      label.appendChild(unoBadge);
+    }
     details.className = 'player-tags';
     details.textContent = tagText + ' - ' + countText;
 
@@ -1068,7 +1075,9 @@ function announcePlayerSummary(table) {
 
 function drawHand() {
   const handTop = getHandTopY();
-  ctx.clearRect(0, handTop, canvas.width, canvas.height - handTop);
+  // Include a small buffer above the hand to erase selected-card glow artifacts.
+  const clearTop = Math.max(0, handTop - 16);
+  ctx.clearRect(0, clearTop, canvas.width, canvas.height - clearTop);
 
   const hand = appState.hand;
   const selectedIndex = hand.length ? Math.max(0, Math.min(hand.length - 1, appState.handIndex)) : -1;
@@ -1281,12 +1290,34 @@ function getSelectedCardDescription() {
 
   const safeIndex = Math.max(0, Math.min(appState.hand.length - 1, appState.handIndex));
   appState.handIndex = safeIndex;
-  return cardType(appState.hand[safeIndex]) + ' ' + cardColor(appState.hand[safeIndex]);
+  return describeCardForSpeech(appState.hand[safeIndex]);
+}
+
+function formatCardTypeForSpeech(type) {
+  if (type.indexOf('Number ') === 0) {
+    return type.replace('Number ', '');
+  }
+
+  if (type === 'Draw2') {
+    return 'Draw Two';
+  }
+
+  if (type === 'Draw4') {
+    return 'Draw Four';
+  }
+
+  return type;
 }
 
 function describeCardForSpeech(card, forcedColor) {
   const color = cardColor(card) === 'black' && forcedColor ? forcedColor : cardColor(card);
-  return cardType(card) + ' ' + color;
+  const type = formatCardTypeForSpeech(cardType(card));
+
+  if (cardColor(card) === 'black') {
+    return color && color !== 'black' ? (type + ' ' + color) : type;
+  }
+
+  return type + ' ' + color;
 }
 
 function formatCardList(cards) {
@@ -1317,7 +1348,10 @@ function buildTurnTransitionMessage(payload) {
   const draw = payload.draw;
 
   if (payload.action === 'play' && payload.playedCard) {
-    lines.push((actorIsYou ? 'You play ' : (actorName + ' plays ')) + payload.playedCard + '.');
+    const unoSuffix = payload.actorHasUno
+      ? (actorIsYou ? ' and say, "Uno"' : ' and says, "Uno"')
+      : '';
+    lines.push((actorIsYou ? 'You play the ' : (actorName + ' plays the ')) + payload.playedCard + unoSuffix + '.');
   }
 
   if (payload.colorChangedTo) {
@@ -1358,8 +1392,8 @@ function buildTurnTransitionMessage(payload) {
     lines.push('Play direction is now ' + payload.direction + '.');
   }
 
-  if (payload.actorHasUno) {
-    lines.push(actorIsYou ? 'You have UNO.' : (actorName + ' has UNO.'));
+  if (payload.actorHasUno && !(payload.action === 'play' && payload.playedCard)) {
+    lines.push(actorIsYou ? 'You say Uno.' : (actorName + ' says Uno.'));
   }
 
   if (!skipMentionsNextTurn) {
@@ -1750,6 +1784,19 @@ socket.on('turnTransition', function (payload) {
   const message = buildTurnTransitionMessage(payload);
   if (!message) {
     return;
+  }
+
+  if (payload.actorHasUno && payload.action === 'play') {
+    const actorIsYou = payload.actorId === socket.id;
+    const actorName = payload.actorName || 'A player';
+    showAnnouncementOverlay({
+      eyebrow: 'UNO',
+      title: actorIsYou ? 'You say UNO!' : (actorName + ' says UNO!'),
+      message: message,
+      tone: 'uno',
+      duration: 2200,
+      kind: 'uno'
+    });
   }
 
   appState.suppressTurnAnnouncementForPlayerId = payload.nextPlayerId || null;

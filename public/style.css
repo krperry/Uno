@@ -156,6 +156,19 @@ button:disabled {
   border-left-color: #d6453d;
 }
 
+.uno-badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: #d6453d;
+  color: #fff8f7;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  vertical-align: middle;
+}
+
 .player-label {
   font-weight: 700;
 }
