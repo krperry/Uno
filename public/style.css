@@ -62,6 +62,7 @@ button {
   color: #f8fff6;
   font-size: 15px;
   cursor: pointer;
+  touch-action: manipulation;
 }
 
 button:disabled {
@@ -94,6 +95,7 @@ button:disabled {
   padding: 10px 12px;
   border-bottom: 1px solid #dde9e5;
   cursor: pointer;
+  touch-action: manipulation;
 }
 
 .table-item:last-child {
@@ -202,6 +204,7 @@ canvas {
   background-color: #10ac84;
   max-width: 100%;
   height: auto;
+  touch-action: none;
 }
 
 .hint {

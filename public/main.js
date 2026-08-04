@@ -60,6 +60,7 @@ const appState = {
 let audioContext = null;
 
 let speechRenderTimer = null;
+const touchBridgeSuppressMs = 450;
 
 const el = {
   authView: document.getElementById('auth-view'),
@@ -358,43 +359,43 @@ function init() {
 }
 
 function bindUi() {
-  el.loginBtn.addEventListener('click', login);
-  el.createAccountBtn.addEventListener('click', createAccount);
-  el.deleteAccountBtn.addEventListener('click', deleteAccountFromAuthForm);
-  el.clearSavedBtn.addEventListener('click', clearSavedEmail);
-  el.logoutBtn.addEventListener('click', logout);
-  el.deleteAccountAuthBtn.addEventListener('click', deleteLoggedInAccount);
-  el.refreshLobbyBtn.addEventListener('click', function () {
+  bindPress(el.loginBtn, login);
+  bindPress(el.createAccountBtn, createAccount);
+  bindPress(el.deleteAccountBtn, deleteAccountFromAuthForm);
+  bindPress(el.clearSavedBtn, clearSavedEmail);
+  bindPress(el.logoutBtn, logout);
+  bindPress(el.deleteAccountAuthBtn, deleteLoggedInAccount);
+  bindPress(el.refreshLobbyBtn, function () {
     socket.emit('requestLobbySnapshot');
   });
-  el.createTableBtn.addEventListener('click', createTable);
-  el.joinTableBtn.addEventListener('click', joinSelectedTable);
-  el.startGameBtn.addEventListener('click', startGame);
-  el.leaveTableBtn.addEventListener('click', leaveTable);
-  el.placeholderBackBtn.addEventListener('click', function () {
+  bindPress(el.createTableBtn, createTable);
+  bindPress(el.joinTableBtn, joinSelectedTable);
+  bindPress(el.startGameBtn, startGame);
+  bindPress(el.leaveTableBtn, leaveTable);
+  bindPress(el.placeholderBackBtn, function () {
     showGamePicker();
   });
-  el.placeholderUnoBtn.addEventListener('click', function () {
+  bindPress(el.placeholderUnoBtn, function () {
     selectGame('uno');
   });
-  el.selectUnoBtn.addEventListener('click', function () {
+  bindPress(el.selectUnoBtn, function () {
     selectGame('uno');
   });
-  el.selectHeartsBtn.addEventListener('click', function () {
+  bindPress(el.selectHeartsBtn, function () {
     selectGame('hearts');
   });
-  el.selectSpadesBtn.addEventListener('click', function () {
+  bindPress(el.selectSpadesBtn, function () {
     selectGame('spades');
   });
-  el.selectCribbageBtn.addEventListener('click', function () {
+  bindPress(el.selectCribbageBtn, function () {
     selectGame('cribbage');
   });
-  el.closeHelpBtn.addEventListener('click', closeHelpOverlay);
-  el.closeAnnouncementBtn.addEventListener('click', function () {
+  bindPress(el.closeHelpBtn, closeHelpOverlay);
+  bindPress(el.closeAnnouncementBtn, function () {
     closeAnnouncementOverlay();
   });
-  el.colorPickerConfirmBtn.addEventListener('click', confirmColorPicker);
-  el.colorPickerCancelBtn.addEventListener('click', cancelColorPicker);
+  bindPress(el.colorPickerConfirmBtn, confirmColorPicker);
+  bindPress(el.colorPickerCancelBtn, cancelColorPicker);
   el.colorPickerOverlay.addEventListener('keydown', function (event) {
     if (event.key === 'Enter') {
       confirmColorPicker();
@@ -431,9 +432,53 @@ function bindUi() {
 
   el.tableList.addEventListener('keydown', handleLobbyListKeys);
 
-  document.addEventListener('click', onMouseClick, false);
-  document.addEventListener('touchstart', onMouseClick, false);
+  if (window.CardTableTouch && typeof window.CardTableTouch.installTouchClickBridge === 'function') {
+    window.CardTableTouch.installTouchClickBridge(canvas, onMouseClick, {
+      suppressMs: touchBridgeSuppressMs,
+      preventDefaultOnTouch: true
+    });
+  } else {
+    canvas.addEventListener('click', onMouseClick, false);
+    canvas.addEventListener('touchstart', onMouseClick, { passive: false });
+  }
   canvas.addEventListener('keydown', handleGameKeys);
+}
+
+function bindPress(element, handler) {
+  if (!element || typeof handler !== 'function') {
+    return;
+  }
+
+  if (window.CardTableTouch && typeof window.CardTableTouch.installTouchClickBridge === 'function') {
+    window.CardTableTouch.installTouchClickBridge(element, function (event) {
+      if (element && typeof element.focus === 'function' && document.activeElement !== element) {
+        element.focus();
+      }
+      handler(event);
+    }, {
+      suppressMs: touchBridgeSuppressMs,
+      preventDefaultOnTouch: true
+    });
+    return;
+  }
+
+  element.addEventListener('click', function (event) {
+    handler(event);
+  });
+
+  element.addEventListener('touchend', function (event) {
+    if (!event.changedTouches || !event.changedTouches.length) {
+      return;
+    }
+
+    if (event.cancelable) {
+      event.preventDefault();
+    }
+    if (element && typeof element.focus === 'function') {
+      element.focus();
+    }
+    handler(event);
+  }, { passive: false });
 }
 
 function login() {
@@ -601,6 +646,10 @@ function onMouseClick(event) {
 
   if (event.target !== canvas) {
     return;
+  }
+
+  if (event.cancelable) {
+    event.preventDefault();
   }
 
   canvas.focus();
@@ -1054,7 +1103,7 @@ function renderLobbyTables() {
     li.className = 'table-item' + (index === appState.selectedLobbyIndex ? ' selected' : '');
     li.tabIndex = -1;
     li.textContent = (table.gameName || 'UNO') + ' | ' + table.name + ' | ' + table.status + ' | ' + table.playerCount + '/' + table.maxPlayers + ' | Host: ' + table.hostName;
-    li.addEventListener('click', function () {
+    bindPress(li, function () {
       appState.selectedLobbyIndex = index;
       renderLobbyTables();
       socket.emit('joinTable', { tableId: table.id });
@@ -1406,6 +1455,13 @@ function buildTurnTransitionMessage(payload) {
     lines.push((actorIsYou ? 'You play the ' : (actorName + ' plays the ')) + payload.playedCard + '.');
   }
 
+  if (payload.actorHasUno) {
+    const unoSpeech = window.CardTableUnoSpeech && typeof window.CardTableUnoSpeech.buildUnoSpeechText === 'function'
+      ? window.CardTableUnoSpeech.buildUnoSpeechText(actorIsYou, actorName)
+      : (actorIsYou ? 'You say Uno.' : (actorName + ' says Uno.'));
+    lines.push(unoSpeech);
+  }
+
   if (payload.colorChangedTo) {
     lines.push('Color changes to ' + payload.colorChangedTo + '.');
   }
@@ -1442,10 +1498,6 @@ function buildTurnTransitionMessage(payload) {
 
   if (payload.direction) {
     lines.push('Play direction is now ' + payload.direction + '.');
-  }
-
-  if (payload.actorHasUno && !(payload.action === 'play' && payload.playedCard)) {
-    lines.push(actorIsYou ? 'You say Uno.' : (actorName + ' says Uno.'));
   }
 
   if (!skipMentionsNextTurn) {
@@ -1853,14 +1905,23 @@ socket.on('turnTransition', function (payload) {
   if (payload.actorHasUno && payload.action === 'play') {
     const actorIsYou = payload.actorId === socket.id;
     const actorName = payload.actorName || 'A player';
+    const unoSpeech = window.CardTableUnoSpeech && typeof window.CardTableUnoSpeech.buildUnoSpeechText === 'function'
+      ? window.CardTableUnoSpeech.buildUnoSpeechText(actorIsYou, actorName)
+      : (actorIsYou ? 'You say UNO!' : (actorName + ' says UNO!'));
+    const overlayMessage = typeof window.CardTableUnoSpeech !== 'undefined' && typeof window.CardTableUnoSpeech.buildUnoAnnouncementMessage === 'function'
+      ? window.CardTableUnoSpeech.buildUnoAnnouncementMessage(message)
+      : message;
+
     showAnnouncementOverlay({
       eyebrow: 'UNO',
       title: actorIsYou ? 'You say UNO!' : (actorName + ' says UNO!'),
-      message: message,
+      message: overlayMessage,
       tone: 'uno',
       duration: 2200,
       kind: 'uno'
     });
+
+    srSpeak(unoSpeech, 'assertive', { canInterruptLock: true, lockMs: 1400 });
   }
 
   appState.suppressTurnAnnouncementForPlayerId = payload.nextPlayerId || null;
@@ -2000,9 +2061,15 @@ socket.on('actionNotice', function (message) {
     return;
   }
 
-  const isUno = /says UNO$/i.test(message);
+  const isUno = /says UNO/i.test(message);
   if (isUno) {
-    // UNO is announced as part of the turnTransition narration to avoid duplicate speech.
+    const actorIsYou = message.indexOf('You') === 0;
+    const actorName = message.replace(/\s+says UNO/i, '').trim();
+    const unoSpeech = window.CardTableUnoSpeech && typeof window.CardTableUnoSpeech.buildUnoSpeechText === 'function'
+      ? window.CardTableUnoSpeech.buildUnoSpeechText(actorIsYou, actorName)
+      : message;
+    setTableStatus(message, 'alert');
+    srSpeak(unoSpeech, 'assertive', { canInterruptLock: true, lockMs: 1400 });
     return;
   }
 
