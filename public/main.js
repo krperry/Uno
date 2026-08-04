@@ -1101,8 +1101,6 @@ function drawHand() {
       ctx.save();
       ctx.lineWidth = 6;
       ctx.strokeStyle = '#ffd166';
-      ctx.shadowColor = 'rgba(0, 0, 0, 0.35)';
-      ctx.shadowBlur = 8;
       ctx.strokeRect(x - 3, y - 3, cdWidth / 2 + 6, cdHeight / 2 + 6);
       ctx.restore();
     }
@@ -1348,10 +1346,7 @@ function buildTurnTransitionMessage(payload) {
   const draw = payload.draw;
 
   if (payload.action === 'play' && payload.playedCard) {
-    const unoSuffix = payload.actorHasUno
-      ? (actorIsYou ? ' and say, "Uno"' : ' and says, "Uno"')
-      : '';
-    lines.push((actorIsYou ? 'You play the ' : (actorName + ' plays the ')) + payload.playedCard + unoSuffix + '.');
+    lines.push((actorIsYou ? 'You play the ' : (actorName + ' plays the ')) + payload.playedCard + '.');
   }
 
   if (payload.colorChangedTo) {
