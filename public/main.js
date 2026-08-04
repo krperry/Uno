@@ -52,6 +52,8 @@ const appState = {
   announcementKind: null,
   pendingWildCard: null,
   colorPickerReturnFocusEl: null,
+  pendingRoundDealAnnouncement: false,
+  roundResultMessage: '',
   speechLockUntil: 0
 };
 
@@ -88,6 +90,7 @@ const el = {
   tableHost: document.getElementById('table-host'),
   tableMatchSettings: document.getElementById('table-match-settings'),
   tableStatus: document.getElementById('table-status'),
+  roundResult: document.getElementById('round-result'),
   playerSummary: document.getElementById('player-summary'),
   startGameBtn: document.getElementById('start-game-btn'),
   leaveTableBtn: document.getElementById('leave-table-btn'),
@@ -125,6 +128,41 @@ function setTableStatus(message, tone) {
 
   el.tableStatus.textContent = appState.tableStatusMessage;
   el.tableStatus.className = 'table-status ' + appState.tableStatusTone;
+}
+
+function setRoundResult(message) {
+  appState.roundResultMessage = message || '';
+
+  if (!el.roundResult) {
+    return;
+  }
+
+  el.roundResult.textContent = appState.roundResultMessage;
+}
+
+function maybeAnnounceNewRoundHand() {
+  if (!appState.pendingRoundDealAnnouncement) {
+    return;
+  }
+
+  if (!Array.isArray(appState.hand) || !appState.hand.length) {
+    return;
+  }
+
+  if (!appState.currentTurnPlayerId) {
+    return;
+  }
+
+  const handText = appState.hand.map(function (card) {
+    return describeCardForSpeech(card);
+  }).join(' ');
+
+  const turnText = appState.turn
+    ? 'Your turn.'
+    : ((appState.currentTurnPlayerName || 'Another player') + "'s turn.");
+
+  appState.pendingRoundDealAnnouncement = false;
+  srSpeak(handText + '. ' + turnText, appState.turn ? 'assertive' : 'polite', { canInterruptLock: true });
 }
 
 function getGameDefinition(gameType) {
@@ -240,6 +278,8 @@ function resetLoggedInState() {
   appState.currentTurnPlayerId = null;
   appState.turnIndicatorText = '';
   appState.suppressTurnAnnouncementForPlayerId = null;
+  appState.pendingRoundDealAnnouncement = false;
+  appState.roundResultMessage = '';
 }
 
 function showGamePicker() {
@@ -980,8 +1020,10 @@ function render() {
     }
     el.startGameBtn.disabled = !appState.isHost || appState.currentTable.players.length < 2 || appState.gameStatus === 'in_game';
     setTableStatus(appState.tableStatusMessage, appState.tableStatusTone);
+    setRoundResult(appState.roundResultMessage);
   } else {
     setTableStatus('Join a table to start playing.', 'info');
+    setRoundResult('');
   }
 
   renderLobbyTables();
@@ -1689,6 +1731,7 @@ socket.on('tableState', function (payload) {
     appState.suppressTurnAnnouncementForPlayerId = null;
     appState.lastAnnouncedTurnPlayerId = null;
     appState.handBeforeDraw = null;
+    appState.pendingRoundDealAnnouncement = false;
     closeAnnouncementOverlay(false);
     render();
     return;
@@ -1711,6 +1754,7 @@ socket.on('tableState', function (payload) {
     appState.discard = null;
     appState.discardChosenColor = null;
     appState.pendingDrawCard = null;
+    appState.pendingRoundDealAnnouncement = false;
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     if (!appState.tableStatusMessage || appState.tableStatusTone !== 'success') {
       setTableStatus('Waiting for the host to start the next game.', 'info');
@@ -1785,6 +1829,7 @@ socket.on('haveCard', function (cardsInHand) {
 
   appState.handIndex = Math.max(0, Math.min(appState.handIndex, Math.max(0, appState.hand.length - 1)));
   drawHand();
+  maybeAnnounceNewRoundHand();
 });
 
 socket.on('sendCard', function (payload) {
@@ -1841,6 +1886,14 @@ socket.on('turnPlayer', function (payload) {
 
   if (isNewTurn) {
     appState.lastAnnouncedTurnPlayerId = payload.id;
+
+    if (appState.pendingRoundDealAnnouncement) {
+      maybeAnnounceNewRoundHand();
+      if (!appState.pendingRoundDealAnnouncement) {
+        renderPlayerSummary();
+        return;
+      }
+    }
 
     if (appState.suppressTurnAnnouncementForPlayerId === payload.id) {
       appState.suppressTurnAnnouncementForPlayerId = null;
@@ -1966,7 +2019,8 @@ socket.on('roundSummary', function (summary) {
     return entry.name + ': ' + entry.totalPoints + ' total';
   }).join(', ');
 
-  const headline = summary.winner + ' won the round for ' + summary.roundPoints + ' points.';
+  const roundNumber = summary.roundNumber || 1;
+  const headline = 'Round ' + roundNumber + ' was won by ' + summary.winner + ' with ' + summary.roundPoints + ' points.';
   const msg = headline + (scoreText ? ' Scores: ' + scoreText : '') + ' Press Enter to continue.';
 
   appState.currentTurnPlayerId = null;
@@ -1976,17 +2030,20 @@ socket.on('roundSummary', function (summary) {
   appState.handIndex = 0;
   appState.handBeforeDraw = null;
   appState.pendingDrawCard = null;
+  appState.pendingRoundDealAnnouncement = true;
+  appState.roundResultMessage = headline;
   drawHand();
   drawTurnIndicator('');
   showAnnouncementOverlay({
-    eyebrow: 'Round ' + (summary.roundNumber || 1) + ' of ' + (summary.maxRounds || 30),
-    title: summary.winner + ' won the round',
+    eyebrow: 'Round ' + roundNumber + ' of ' + (summary.maxRounds || 30),
+    title: 'Round ' + roundNumber + ' winner',
     message: msg,
     tone: 'winner',
     sticky: true,
     kind: 'roundSummary'
   });
   setTableStatus(headline, 'success');
+  setRoundResult(headline);
   renderPlayerSummary();
   srSpeak(headline, 'assertive', { lockMs: 2200 });
 });
@@ -2004,12 +2061,14 @@ socket.on('matchSummary', function (summary) {
     ? ' after ' + (summary.roundNumber || '') + ' rounds.'
     : ' by reaching ' + summary.score + ' points.';
 
-  const headline = summary.winner + ' won the match' + reasonText;
+  const headline = 'The match was won by ' + summary.winner + reasonText;
   const msg = headline + (scoreText ? ' Final scores: ' + scoreText : '') + ' Press Enter to continue.';
 
   appState.currentTurnPlayerId = null;
   appState.lastAnnouncedTurnPlayerId = null;
   appState.turn = false;
+  appState.pendingRoundDealAnnouncement = false;
+  appState.roundResultMessage = headline;
   drawTurnIndicator('');
 
   showAnnouncementOverlay({
@@ -2021,6 +2080,7 @@ socket.on('matchSummary', function (summary) {
     kind: 'matchSummary'
   });
   setTableStatus(headline, 'success');
+  setRoundResult(headline);
   srSpeak(headline, 'assertive', { lockMs: 2500 });
 });
 

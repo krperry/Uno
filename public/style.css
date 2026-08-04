@@ -146,6 +146,23 @@ button:disabled {
   color: #773617;
 }
 
+.round-result {
+  margin: 8px 0 10px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: #fff1c7;
+  border: 1px solid #e0bf68;
+  color: #5c3e00;
+  font-weight: 700;
+  min-height: 42px;
+  display: flex;
+  align-items: center;
+}
+
+.round-result:empty {
+  display: none;
+}
+
 .player-summary li.current-turn {
   background: #fff4cc;
   border-left-color: #dd8a00;
