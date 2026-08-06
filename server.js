@@ -4,7 +4,12 @@ const path = require('path');
 const crypto = require('crypto');
 const app = express();
 const http = require('http').Server(app);
-const io = require('socket.io')(http);
+const io = require('socket.io')(http, {
+  // Mobile Safari can pause background tabs, delaying heartbeat responses.
+  // Allow a longer window so brief focus loss does not eject active players.
+  pingInterval: 25000,
+  pingTimeout: 300000
+});
 
 const port = process.env.PORT || 4123;
 const MAX_TABLE_PLAYERS = 6;
@@ -15,6 +20,7 @@ const MIN_WINNING_SCORE = 50;
 const MAX_WINNING_SCORE = 100000;
 const MIN_MAX_ROUNDS = 1;
 const MAX_MAX_ROUNDS = 1000;
+const DISCONNECT_GRACE_MS = Math.max(1000, parseInt(process.env.DISCONNECT_GRACE_MS || '45000', 10));
 const ACCOUNT_FILE_PATH = path.join(__dirname, 'data', 'accounts.json');
 const DEFAULT_GAME_TYPE = 'uno';
 const GAME_DEFINITIONS = {
@@ -43,6 +49,7 @@ server.on('error', function (error) {
 let tableSequence = 1;
 const tables = {};
 const accounts = loadAccounts();
+const disconnectGraceByAccountId = {};
 
 function loadAccounts() {
   const dirPath = path.dirname(ACCOUNT_FILE_PATH);
@@ -178,6 +185,126 @@ function findTableBySocket(socket) {
   }
 
   return tables[socket.tableId] || null;
+}
+
+function findPlayerSeatByAccountId(accountId) {
+  if (!accountId) {
+    return null;
+  }
+
+  const tableIds = Object.keys(tables);
+  for (let i = 0; i < tableIds.length; i++) {
+    const table = tables[tableIds[i]];
+    const playerIndex = table.players.findIndex(function (player) {
+      return player.accountId === accountId;
+    });
+
+    if (playerIndex >= 0) {
+      return { table: table, playerIndex: playerIndex };
+    }
+  }
+
+  return null;
+}
+
+function clearDisconnectGraceForAccount(accountId) {
+  if (!accountId || !disconnectGraceByAccountId[accountId]) {
+    return;
+  }
+
+  clearTimeout(disconnectGraceByAccountId[accountId].timeoutId);
+  delete disconnectGraceByAccountId[accountId];
+}
+
+function shouldUseDisconnectGrace(reason) {
+  return reason === 'ping timeout'
+    || reason === 'transport close'
+    || reason === 'transport error'
+    || reason === 'io client disconnect'
+    || reason === 'client namespace disconnect';
+}
+
+function scheduleDisconnectGrace(socket, reason) {
+  if (!socket || !socket.accountId || !socket.tableId) {
+    leaveCurrentTable(socket, 'disconnect');
+    return;
+  }
+
+  const seat = findPlayerSeatByAccountId(socket.accountId);
+  if (!seat) {
+    leaveCurrentTable(socket, 'disconnect');
+    return;
+  }
+
+  clearDisconnectGraceForAccount(socket.accountId);
+
+  const graceSeconds = Math.round(DISCONNECT_GRACE_MS / 1000);
+  io.to(seat.table.id).emit('actionNotice', socket.playerName + ' disconnected. Waiting up to ' + graceSeconds + ' seconds for reconnect.');
+
+  const timeoutId = setTimeout(function () {
+    delete disconnectGraceByAccountId[socket.accountId];
+    leaveCurrentTable(socket, 'disconnect');
+  }, DISCONNECT_GRACE_MS);
+
+  disconnectGraceByAccountId[socket.accountId] = {
+    timeoutId: timeoutId,
+    tableId: socket.tableId,
+    socketId: socket.id
+  };
+}
+
+function reclaimSeatAfterReconnect(socket) {
+  if (!socket || !socket.accountId) {
+    return;
+  }
+
+  const graceEntry = disconnectGraceByAccountId[socket.accountId];
+  const seat = findPlayerSeatByAccountId(socket.accountId);
+  if (!seat) {
+    clearDisconnectGraceForAccount(socket.accountId);
+    return;
+  }
+
+  const table = seat.table;
+  const player = table.players[seat.playerIndex];
+  const previousSocketId = player.id;
+  const hasPendingGrace = !!graceEntry;
+
+  if (hasPendingGrace) {
+    clearDisconnectGraceForAccount(socket.accountId);
+  }
+
+  if (previousSocketId === socket.id) {
+    socket.tableId = table.id;
+    socket.join(table.id);
+    return;
+  }
+
+  player.id = socket.id;
+  socket.tableId = table.id;
+  socket.join(table.id);
+
+  if (table.hostId === previousSocketId) {
+    table.hostId = socket.id;
+  }
+
+  if (table.status === 'in_game' && table.game && table.game.pendingRoundAcks && table.game.pendingRoundAcks[previousSocketId]) {
+    table.game.pendingRoundAcks[socket.id] = true;
+    delete table.game.pendingRoundAcks[previousSocketId];
+  }
+
+  emitTableState(table);
+  emitLobbySnapshotAll();
+
+  if (table.status === 'in_game' && table.game) {
+    io.to(player.id).emit('haveCard', player.hand);
+    emitDiscardCard(table);
+    emitTurnPlayer(table);
+  }
+
+  if (hasPendingGrace) {
+    io.to(table.id).emit('actionNotice', player.name + ' reconnected');
+  }
 }
 
 function createTableId() {
@@ -946,6 +1073,7 @@ function onConnection(socket) {
     }
 
     attachSocketToAccount(socket, account);
+    reclaimSeatAfterReconnect(socket);
     socket.emit('loginResult', {
       success: true,
       name: socket.playerName,
@@ -1014,6 +1142,7 @@ function onConnection(socket) {
     accounts.push(account);
     saveAccounts();
     attachSocketToAccount(socket, account);
+    reclaimSeatAfterReconnect(socket);
     const rememberToken = rememberMe ? issueRememberToken(account) : null;
     socket.emit('loginResult', {
       success: true,
@@ -1052,6 +1181,7 @@ function onConnection(socket) {
     }
 
     attachSocketToAccount(socket, account);
+    reclaimSeatAfterReconnect(socket);
     const rememberToken = rememberMe ? issueRememberToken(account) : null;
     socket.emit('loginResult', {
       success: true,
@@ -1075,6 +1205,7 @@ function onConnection(socket) {
       clearRememberToken(accounts[accountIndex]);
     }
 
+    clearDisconnectGraceForAccount(socket.accountId);
     leaveCurrentTable(socket, 'logout');
     clearSocketAuth(socket);
     socket.emit('logoutResult', { success: true, message: 'Logged out' });
@@ -1104,6 +1235,7 @@ function onConnection(socket) {
         return;
       }
 
+      clearDisconnectGraceForAccount(socket.accountId);
       leaveCurrentTable(socket, 'account_delete');
       clearRememberToken(account);
       accounts.splice(accountIndex, 1);
@@ -1194,7 +1326,7 @@ function onConnection(socket) {
       hostId: socket.id,
       hostName: socket.playerName,
       status: 'waiting',
-      players: [{ id: socket.id, name: socket.playerName, hand: [] }],
+      players: [{ id: socket.id, accountId: socket.accountId, name: socket.playerName, hand: [] }],
       game: null,
       scores: {},
       dealerIndex: -1,
@@ -1244,7 +1376,7 @@ function onConnection(socket) {
 
     leaveCurrentTable(socket, 'switch_table');
 
-    table.players.push({ id: socket.id, name: socket.playerName, hand: [] });
+    table.players.push({ id: socket.id, accountId: socket.accountId, name: socket.playerName, hand: [] });
     if (typeof table.scores[socket.playerName] !== 'number') {
       table.scores[socket.playerName] = 0;
     }
@@ -1548,10 +1680,17 @@ function onConnection(socket) {
   });
 
   socket.on('disconnecting', function () {
-    leaveCurrentTable(socket, 'disconnect');
+    // Handled in `disconnect` where a reason is available.
   });
 
-  socket.on('disconnect', function () {
-    console.log('Player disconnected:', socket.id, socket.playerName || 'unknown');
+  socket.on('disconnect', function (reason) {
+    if (shouldUseDisconnectGrace(reason)) {
+      scheduleDisconnectGrace(socket, reason);
+    } else {
+      clearDisconnectGraceForAccount(socket.accountId);
+      leaveCurrentTable(socket, 'disconnect');
+    }
+
+    console.log('Player disconnected:', socket.id, socket.playerName || 'unknown', reason || 'unknown reason');
   });
 }
