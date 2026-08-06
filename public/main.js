@@ -1286,13 +1286,18 @@ function showAnnouncementOverlay(options) {
   el.announcementOverlay.classList.remove('hidden');
   el.announcementTitle.parentElement.className = 'overlay-card announcement-card ' + tone;
 
+  const isRoundOrMatchDialog = kind === 'roundSummary' || kind === 'matchSummary';
+  if (isRoundOrMatchDialog) {
+    el.closeAnnouncementBtn.focus();
+  }
+
   if (sticky) {
     el.closeAnnouncementBtn.focus();
     return;
   }
 
   appState.announcementTimer = window.setTimeout(function () {
-    closeAnnouncementOverlay(false);
+    closeAnnouncementOverlay();
   }, duration);
 }
 
@@ -1326,6 +1331,8 @@ function closeAnnouncementOverlay(restoreFocus) {
     focusBoardForA11y({
       announceOnFocus: true
     });
+  } else if (appState.currentTable && el.leaveTableBtn && typeof el.leaveTableBtn.focus === 'function') {
+    el.leaveTableBtn.focus();
   }
 }
 
@@ -1760,7 +1767,7 @@ function buildNextTurnText(playerId, playerName) {
   if (!playerId) {
     return '';
   }
-  return playerId === socket.id ? 'Your turn.' : ("It's " + (playerName || 'Another player') + "'s turn.");
+  return playerId === socket.id ? 'It is your turn.' : ("It is " + (playerName || 'Another player') + "'s turn.");
 }
 
 function buildTurnTransitionMessage(payload) {
@@ -1826,11 +1833,11 @@ function buildTurnTransitionMessage(payload) {
     skipMentionsNextTurn = true;
   }
 
-  if (payload.direction && payload.playedType === 'Reverse') {
-    lines.push('Play direction is now ' + payload.direction + '.');
-  }
-
-  if (!skipMentionsNextTurn) {
+  if (payload.direction) {
+    const directionText = String(payload.direction).toLowerCase();
+    const nextTurnText = buildNextTurnText(payload.nextPlayerId, payload.nextPlayerName);
+    lines.push('Direction is now ' + directionText + (nextTurnText ? '. ' + nextTurnText : '.'));
+  } else if (!skipMentionsNextTurn) {
     const nextTurnText = buildNextTurnText(payload.nextPlayerId, payload.nextPlayerName);
     if (nextTurnText) {
       lines.push(nextTurnText);
@@ -2149,7 +2156,11 @@ socket.on('tableState', function (payload) {
     }
   } else if (!appState.currentTurnPlayerId) {
     appState.playDirection = normalizeDirection(appState.playDirection);
-    closeAnnouncementOverlay(false);
+    const isRoundOrMatchDialogOpen = appState.announcementOpen
+      && (appState.announcementKind === 'roundSummary' || appState.announcementKind === 'matchSummary');
+    if (!isRoundOrMatchDialogOpen) {
+      closeAnnouncementOverlay(false);
+    }
     setTableStatus('Game in progress. Waiting for the next turn update.', 'info');
   }
 
@@ -2445,9 +2456,8 @@ socket.on('roundSummary', function (summary) {
   }).join(', ');
 
   const roundNumber = summary.roundNumber || 1;
-  const headline = summary.winner + ' won Round ' + roundNumber + '.';
-  const detail = summary.winner + ' scored ' + summary.roundPoints + ' points this round.';
-  const msg = headline + ' ' + detail + (scoreText ? ' Scores: ' + scoreText : '') + ' Press Enter to continue.';
+  const headline = summary.winner + ' won with ' + summary.roundPoints + ' points.';
+  const msg = headline + (scoreText ? ' Scores: ' + scoreText : '');
 
   appState.currentTurnPlayerId = null;
   appState.lastAnnouncedTurnPlayerId = null;
@@ -2465,13 +2475,13 @@ socket.on('roundSummary', function (summary) {
     title: 'Round ' + roundNumber + ' winner',
     message: msg,
     tone: 'winner',
-    sticky: true,
+    duration: 3000,
     kind: 'roundSummary'
   });
   setTableStatus(headline, 'success');
   setRoundResult(headline);
   renderPlayerSummary();
-  srSpeak(headline, 'assertive', { lockMs: 2200 });
+  srSpeak(headline, 'assertive', { lockMs: 3000 });
 });
 
 socket.on('matchSummary', function (summary) {
@@ -2483,12 +2493,8 @@ socket.on('matchSummary', function (summary) {
     return entry.name + ': ' + entry.totalPoints;
   }).join(', ');
 
-  const reasonText = summary.reason === 'max_rounds'
-    ? ' after ' + (summary.roundNumber || '') + ' rounds.'
-    : ' by reaching ' + summary.score + ' points.';
-
-  const headline = 'The match was won by ' + summary.winner + reasonText;
-  const msg = headline + (scoreText ? ' Final scores: ' + scoreText : '') + ' Press Enter to continue.';
+  const headline = summary.winner + ' won with ' + summary.score + ' points.';
+  const msg = headline + (scoreText ? ' Final scores: ' + scoreText : '');
 
   appState.currentTurnPlayerId = null;
   appState.lastAnnouncedTurnPlayerId = null;
@@ -2502,12 +2508,12 @@ socket.on('matchSummary', function (summary) {
     title: summary.winner + ' won the match',
     message: msg,
     tone: 'winner',
-    sticky: true,
+    duration: 3000,
     kind: 'matchSummary'
   });
   setTableStatus(headline, 'success');
   setRoundResult(headline);
-  srSpeak(headline, 'assertive', { lockMs: 2500 });
+  srSpeak(headline, 'assertive', { lockMs: 3000 });
 });
 
 init();
