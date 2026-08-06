@@ -22,6 +22,7 @@ const MIN_MAX_ROUNDS = 1;
 const MAX_MAX_ROUNDS = 1000;
 const DISCONNECT_GRACE_MS = Math.max(1000, parseInt(process.env.DISCONNECT_GRACE_MS || '45000', 10));
 const ACCOUNT_FILE_PATH = path.join(__dirname, 'data', 'accounts.json');
+const LOG_FILE_PATH = path.join(__dirname, 'logs', 'server.log');
 const DEFAULT_GAME_TYPE = 'uno';
 const GAME_DEFINITIONS = {
   uno: { type: 'uno', name: 'Lumo', playable: true },
@@ -30,8 +31,65 @@ const GAME_DEFINITIONS = {
   cribbage: { type: 'cribbage', name: 'Cribbage', playable: false }
 };
 
+function ensureLogDir() {
+  const dirPath = path.dirname(LOG_FILE_PATH);
+  if (!fs.existsSync(dirPath)) {
+    fs.mkdirSync(dirPath, { recursive: true });
+  }
+}
+
+// Sync append so a crash's log line is guaranteed to hit disk before the
+// process exits (an async write could otherwise be lost).
+function writeLogLine(level, message, details) {
+  ensureLogDir();
+  const entry = { time: new Date().toISOString(), level: level, message: message };
+  if (details !== undefined) {
+    entry.details = details;
+  }
+
+  try {
+    fs.appendFileSync(LOG_FILE_PATH, JSON.stringify(entry) + '\n');
+  } catch (writeError) {
+    console.error('Failed to write to log file:', writeError);
+  }
+
+  const consoleFn = level === 'error' ? console.error : console.warn;
+  consoleFn('[' + entry.time + '] ' + level.toUpperCase() + ': ' + message, details !== undefined ? details : '');
+}
+
+function logServerError(message, error, details) {
+  writeLogLine('error', message, Object.assign({}, details, {
+    error: error ? (error.stack || String(error)) : undefined
+  }));
+}
+
+function logSocketWarning(message, details) {
+  writeLogLine('warn', message, details);
+}
+
+// Last-resort net: without this, any exception thrown outside a wrapped
+// socket handler (e.g. in a setTimeout callback) kills the whole process for
+// every connected table with no record of why. Log full details, then exit -
+// per-handler state may be corrupted so continuing is not safe.
+process.on('uncaughtException', function (error) {
+  logServerError('uncaughtException - server is exiting', error);
+  process.exit(1);
+});
+
+process.on('unhandledRejection', function (reason) {
+  logServerError('unhandledRejection', reason instanceof Error ? reason : new Error(String(reason)));
+});
+
 app.use(express.static(__dirname + '/public'));
 io.on('connection', onConnection);
+
+io.engine.on('connection_error', function (error) {
+  logSocketWarning('Socket.IO connection_error', {
+    code: error && error.code,
+    message: error && error.message,
+    context: error && error.context
+  });
+});
 
 const server = http.listen(port, function () {
   console.log('listening on port ' + port);
@@ -43,6 +101,7 @@ server.on('error', function (error) {
   } else {
     console.error('Unable to start server:', error);
   }
+  logServerError('HTTP server failed to start', error);
   process.exit(1);
 });
 
@@ -1335,6 +1394,29 @@ function validatePlayerReady(socket) {
 }
 
 function onConnection(socket) {
+  // Wrap every socket.on() registered below so a thrown exception in one
+  // handler only fails that one action instead of crashing the entire
+  // process (and every other table's game along with it).
+  const rawSocketOn = socket.on.bind(socket);
+  socket.on = function (event, handler) {
+    return rawSocketOn(event, function () {
+      try {
+        return handler.apply(socket, arguments);
+      } catch (error) {
+        logServerError('Unhandled error in socket handler for "' + event + '"', error, {
+          socketId: socket.id,
+          playerName: socket.playerName || null,
+          tableId: socket.tableId || null
+        });
+        socket.emit('serverMessage', { type: 'error', message: 'Something went wrong processing that action. Please try again.' });
+      }
+    });
+  };
+
+  socket.on('error', function (error) {
+    logServerError('Socket-level error', error, { socketId: socket.id, playerName: socket.playerName || null });
+  });
+
   clearSocketAuth(socket);
   socket.tableId = null;
 
@@ -2232,7 +2314,11 @@ function onConnection(socket) {
       leaveCurrentTable(socket, 'disconnect');
     }
 
-    console.log('Player disconnected:', socket.id, socket.playerName || 'unknown', reason || 'unknown reason');
+    logSocketWarning('Player disconnected', {
+      socketId: socket.id,
+      playerName: socket.playerName || 'unknown',
+      reason: reason || 'unknown reason'
+    });
   });
 }
 
