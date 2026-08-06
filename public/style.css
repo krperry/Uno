@@ -148,6 +148,23 @@ button:disabled {
   color: #773617;
 }
 
+.play-direction {
+  margin: 8px 0 10px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: #e8f0ff;
+  border: 1px solid #9db6e8;
+  color: #1a3568;
+  font-weight: 700;
+  min-height: 42px;
+  display: flex;
+  align-items: center;
+}
+
+.play-direction:empty {
+  display: none;
+}
+
 .round-result {
   margin: 8px 0 10px;
   padding: 10px 12px;

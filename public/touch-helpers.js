@@ -24,7 +24,7 @@
     let lastTouchAt = 0;
 
     function handleTouchEnd(event) {
-      if (!event || !event.changedTouches || !event.changedTouches.length) {
+      if (!event) {
         return;
       }
 
@@ -54,9 +54,6 @@
 
     function handleTouchCancel(event) {
       lastTouchAt = 0;
-      if (settings.preventDefaultOnTouch && event && event.cancelable && typeof event.preventDefault === 'function') {
-        event.preventDefault();
-      }
     }
 
     element.addEventListener('touchend', handleTouchEnd, { passive: false });

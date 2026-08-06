@@ -90,6 +90,7 @@
         <p id="table-host"></p>
         <p id="table-match-settings"></p>
         <div id="table-status" class="table-status" aria-live="polite"></div>
+        <div id="play-direction" class="play-direction" aria-live="polite"></div>
         <div id="round-result" class="round-result" aria-live="polite"></div>
         <ul id="player-summary" class="player-summary" aria-label="Players and card counts"></ul>
         <div class="row">
@@ -106,13 +107,12 @@
             role="application"
             aria-roledescription="UNO game board"
             aria-label="UNO game board"
-            aria-keyshortcuts="ArrowLeft ArrowRight Home End D P T C S R Y B G QuestionMark Enter Space"
             aria-describedby="game-help"
           ></canvas>
           <p id="game-help" class="visually-hidden">
-            Use mouse or touch to play cards and draw from the pile. Keyboard shortcuts on the game board: left and right arrows move between cards, Home and End jump to the first or last card, Enter or Space plays selected card, D draws a card, P reads the top discard, T announces whose turn it is and the discard, C announces your card count, S announces your score, Shift+S announces every score, R Y B G jump to the highest card of that color, Shift with those keys jumps to the lowest, question mark opens keyboard help.
+            Use mouse or touch to play cards and draw from the pile. Press question mark on the game board to open the keyboard commands dialog.
           </p>
-          <p class="hint">Mouse, touch, and keyboard are all supported.</p>
+          <p class="hint">Mouse, touch, and keyboard are all supported. Press question mark on the board for keyboard commands.</p>
         </div>
       </section>
     </main>
@@ -120,6 +120,7 @@
     <div id="help-overlay" class="overlay hidden" role="dialog" aria-modal="true" aria-labelledby="help-title">
       <div class="overlay-card">
         <h2 id="help-title">Keyboard Commands</h2>
+        <p>Press Escape to close this dialog and return focus to the game board.</p>
         <ul>
           <li>Left Arrow: select previous card</li>
           <li>Right Arrow: select next card</li>
@@ -129,8 +130,11 @@
           <li>D: draw a card</li>
           <li>P: announce top discard card</li>
           <li>T: announce whose turn it is and the top discard</li>
+          <li>N: announce direction and who plays next</li>
           <li>C: announce how many cards are in your hand</li>
           <li>H: announce your full hand</li>
+          <li>Q: read all playable cards and select the highest score playable card</li>
+          <li>Shift+Q: read all playable cards and select the lowest score playable card</li>
           <li>S: announce your score</li>
           <li>Shift+S: announce every player's score, highest to lowest</li>
           <li>R / Shift+R: select highest / lowest red card</li>

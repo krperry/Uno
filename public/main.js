@@ -43,6 +43,9 @@ const appState = {
   tableStatusTone: 'info',
   currentTurnPlayerId: null,
   currentTurnPlayerName: '',
+  nextPlayerId: null,
+  nextPlayerName: '',
+  playDirection: 'clockwise',
   currentTurnTopDiscard: '',
   turnIndicatorText: '',
   suppressTurnAnnouncementForPlayerId: null,
@@ -54,7 +57,9 @@ const appState = {
   colorPickerReturnFocusEl: null,
   pendingRoundDealAnnouncement: false,
   roundResultMessage: '',
-  speechLockUntil: 0
+  speechLockUntil: 0,
+  lastBoardFocusAt: 0,
+  lastBoardFocusMessage: ''
 };
 
 let audioContext = null;
@@ -91,6 +96,7 @@ const el = {
   tableHost: document.getElementById('table-host'),
   tableMatchSettings: document.getElementById('table-match-settings'),
   tableStatus: document.getElementById('table-status'),
+  playDirection: document.getElementById('play-direction'),
   roundResult: document.getElementById('round-result'),
   playerSummary: document.getElementById('player-summary'),
   startGameBtn: document.getElementById('start-game-btn'),
@@ -141,6 +147,95 @@ function setRoundResult(message) {
   el.roundResult.textContent = appState.roundResultMessage;
 }
 
+function normalizeDirection(direction) {
+  if (typeof direction !== 'string') {
+    return 'clockwise';
+  }
+
+  return direction.toLowerCase() === 'counterclockwise'
+    ? 'counterclockwise'
+    : 'clockwise';
+}
+
+function getDirectionLabel(direction) {
+  return normalizeDirection(direction) === 'counterclockwise'
+    ? 'Counterclockwise'
+    : 'Clockwise';
+}
+
+function getUpcomingPlayerFromDirection() {
+  if (!appState.currentTable || !Array.isArray(appState.currentTable.players) || !appState.currentTable.players.length) {
+    return null;
+  }
+
+  if (!appState.currentTurnPlayerId) {
+    return null;
+  }
+
+  const players = appState.currentTable.players;
+  const currentIndex = players.findIndex(function (player) {
+    return player.id === appState.currentTurnPlayerId;
+  });
+
+  if (currentIndex === -1) {
+    return null;
+  }
+
+  const step = normalizeDirection(appState.playDirection) === 'counterclockwise' ? -1 : 1;
+  const nextIndex = (currentIndex + step + players.length) % players.length;
+  return players[nextIndex] || null;
+}
+
+function setPlayDirectionIndicator() {
+  if (!el.playDirection) {
+    return;
+  }
+
+  if (!appState.currentTable || appState.gameStatus !== 'in_game') {
+    el.playDirection.textContent = '';
+    return;
+  }
+
+  const directionText = 'Direction: ' + getDirectionLabel(appState.playDirection);
+  let nextText = 'Waiting for next turn';
+  const upcomingPlayer = getUpcomingPlayerFromDirection();
+
+  if (upcomingPlayer) {
+    nextText = upcomingPlayer.id === socket.id
+      ? 'Next: You'
+      : ('Next: ' + (upcomingPlayer.name || 'Another player'));
+  } else if (appState.nextPlayerId || appState.nextPlayerName) {
+    nextText = appState.nextPlayerId === socket.id
+      ? 'Next: You'
+      : ('Next: ' + (appState.nextPlayerName || 'Another player'));
+  }
+
+  el.playDirection.textContent = directionText + ' | ' + nextText;
+}
+
+function speakDirectionAndNextPlayer() {
+  if (!appState.currentTable || appState.gameStatus !== 'in_game') {
+    srSpeak('Game has not started yet', 'assertive', { canInterruptLock: true });
+    return;
+  }
+
+  const directionText = 'Play direction is ' + getDirectionLabel(appState.playDirection).toLowerCase() + '.';
+  let nextText = 'Next player is not known yet.';
+  const upcomingPlayer = getUpcomingPlayerFromDirection();
+
+  if (upcomingPlayer) {
+    nextText = upcomingPlayer.id === socket.id
+      ? 'You play next.'
+      : ((upcomingPlayer.name || 'Another player') + ' plays next.');
+  } else if (appState.nextPlayerId || appState.nextPlayerName) {
+    nextText = appState.nextPlayerId === socket.id
+      ? 'You play next.'
+      : ((appState.nextPlayerName || 'Another player') + ' plays next.');
+  }
+
+  srSpeak(directionText + ' ' + nextText, 'assertive', { canInterruptLock: true });
+}
+
 function maybeAnnounceNewRoundHand() {
   if (!appState.pendingRoundDealAnnouncement) {
     return;
@@ -163,7 +258,71 @@ function maybeAnnounceNewRoundHand() {
     : ((appState.currentTurnPlayerName || 'Another player') + "'s turn.");
 
   appState.pendingRoundDealAnnouncement = false;
+  focusBoardForA11y({
+    announceOnFocus: false
+  });
   srSpeak(handText + '. ' + turnText, appState.turn ? 'assertive' : 'polite', { canInterruptLock: true });
+}
+
+function getBoardFocusMessage() {
+  const handText = appState.hand.length
+    ? ('Your hand: ' + appState.hand.map(function (card) {
+      return describeCardForSpeech(card);
+    }).join(', ') + '.')
+    : 'Your hand is empty.';
+
+  const turnText = appState.currentTurnPlayerId
+    ? (appState.turn ? 'It is your turn.' : ((appState.currentTurnPlayerName || 'Another player') + " has the turn."))
+    : 'Waiting for the next turn.';
+
+  const discardText = appState.currentTurnTopDiscard
+    ? ('Top discard is ' + appState.currentTurnTopDiscard + '.')
+    : '';
+
+  return (handText + ' ' + turnText + (discardText ? (' ' + discardText) : '')).trim();
+}
+
+function maybeAnnounceBoardFocus(priority) {
+  if (!appState.currentTable || appState.gameStatus !== 'in_game') {
+    return;
+  }
+
+  const message = getBoardFocusMessage();
+  const now = Date.now();
+  const isDuplicate = message === appState.lastBoardFocusMessage && (now - appState.lastBoardFocusAt) < 1200;
+  if (isDuplicate) {
+    return;
+  }
+
+  appState.lastBoardFocusMessage = message;
+  appState.lastBoardFocusAt = now;
+  srSpeak(message, priority || 'polite', { canInterruptLock: true });
+}
+
+function focusBoardForA11y(options) {
+  const announceOnFocus = !!(options && options.announceOnFocus);
+
+  if (!appState.currentTable || appState.gameStatus !== 'in_game') {
+    return;
+  }
+
+  if (appState.helpOpen || appState.announcementOpen || (el.colorPickerOverlay && !el.colorPickerOverlay.classList.contains('hidden'))) {
+    return;
+  }
+
+  window.requestAnimationFrame(function () {
+    if (document.activeElement !== canvas) {
+      canvas.focus();
+    }
+
+    if (announceOnFocus) {
+      maybeAnnounceBoardFocus(appState.turn ? 'assertive' : 'polite');
+    }
+  });
+}
+
+function handleCanvasFocus() {
+  maybeAnnounceBoardFocus('polite');
 }
 
 function getGameDefinition(gameType) {
@@ -277,6 +436,9 @@ function resetLoggedInState() {
   appState.gameStatus = 'waiting';
   appState.isHost = false;
   appState.currentTurnPlayerId = null;
+  appState.nextPlayerId = null;
+  appState.nextPlayerName = '';
+  appState.playDirection = 'clockwise';
   appState.turnIndicatorText = '';
   appState.suppressTurnAnnouncementForPlayerId = null;
   appState.pendingRoundDealAnnouncement = false;
@@ -406,6 +568,13 @@ function bindUi() {
     }
   });
 
+  el.helpOverlay.addEventListener('keydown', function (event) {
+    if (event.key === 'Escape') {
+      closeHelpOverlay();
+      event.preventDefault();
+    }
+  });
+
   el.emailInput.addEventListener('keydown', function (event) {
     if (event.key === 'Enter') {
       login();
@@ -442,6 +611,7 @@ function bindUi() {
     canvas.addEventListener('touchstart', onMouseClick, { passive: false });
   }
   canvas.addEventListener('keydown', handleGameKeys);
+  canvas.addEventListener('focus', handleCanvasFocus);
 }
 
 function bindPress(element, handler) {
@@ -775,6 +945,15 @@ function handleGameKeys(event) {
       ? appState.hand.map(function (card) { return describeCardForSpeech(card); }).join(', ')
       : 'No cards in hand';
     handled = true;
+  } else if (key === 'n') {
+    speakDirectionAndNextPlayer();
+    handled = true;
+  } else if (key === 'q' && !shift) {
+    announcePlayableCardsAndSelectByScore(true);
+    handled = true;
+  } else if (key === 'q' && shift) {
+    announcePlayableCardsAndSelectByScore(false);
+    handled = true;
   } else if (key === 's' && !shift) {
     speakOwnScore();
     handled = true;
@@ -861,6 +1040,90 @@ function isWildDrawFourBlocked(card) {
   });
 }
 
+function getCardScoreValue(card) {
+  const type = cardType(card);
+  if (type.indexOf('Number ') === 0) {
+    return card % 14;
+  }
+
+  if (type === 'Skip' || type === 'Reverse' || type === 'Draw2') {
+    return 20;
+  }
+
+  if (type === 'Wild' || type === 'Draw4') {
+    return 50;
+  }
+
+  return 0;
+}
+
+function isCardPlayableForCurrentBoard(card) {
+  if (typeof card !== 'number') {
+    return false;
+  }
+
+  if (cardColor(card) === 'black') {
+    return cardType(card) === 'Draw4' ? !isWildDrawFourBlocked(card) : true;
+  }
+
+  const boardColor = getClientBoardColor();
+  if (boardColor && cardColor(card) === boardColor) {
+    return true;
+  }
+
+  if (typeof appState.discard === 'number' && cardType(card) === cardType(appState.discard)) {
+    return true;
+  }
+
+  return false;
+}
+
+function announcePlayableCardsAndSelectByScore(wantHighest) {
+  if (!Array.isArray(appState.hand) || !appState.hand.length) {
+    srSpeak('No cards in hand', 'assertive', { canInterruptLock: true });
+    return;
+  }
+
+  const playable = [];
+  for (let i = 0; i < appState.hand.length; i++) {
+    const card = appState.hand[i];
+    if (isCardPlayableForCurrentBoard(card)) {
+      playable.push({
+        card: card,
+        index: i,
+        score: getCardScoreValue(card)
+      });
+    }
+  }
+
+  if (!playable.length) {
+    playErrorTone();
+    srSpeak('No playable cards available', 'assertive', { canInterruptLock: true });
+    return;
+  }
+
+  playable.sort(function (a, b) {
+    if (a.score !== b.score) {
+      return wantHighest ? (b.score - a.score) : (a.score - b.score);
+    }
+    return a.index - b.index;
+  });
+
+  const selected = playable[0];
+  appState.handIndex = selected.index;
+  drawHand();
+
+  const listText = playable.map(function (entry) {
+    return describeCardForSpeech(entry.card) + ' ' + entry.score;
+  }).join('. ');
+  const selectedText = describeCardForSpeech(selected.card) + ' selected.';
+  const intro = wantHighest
+    ? 'Playable cards, highest score first:'
+    : 'Playable cards, lowest score first:';
+
+  srSpeak(intro + ' ' + listText + '. ' + selectedText, 'assertive', { canInterruptLock: true });
+}
+
 function submitPlayCard(card, chosenColor) {
   socket.emit('playCard', {
     card: card,
@@ -943,7 +1206,9 @@ function confirmColorPicker() {
   closeColorPicker(false);
 
   if (appState.currentTable && appState.gameStatus === 'in_game') {
-    canvas.focus();
+    focusBoardForA11y({
+      announceOnFocus: true
+    });
   }
 
   srSpeak('You play ' + cardDescription + '.', 'assertive', { canInterruptLock: true });
@@ -965,7 +1230,9 @@ function closeHelpOverlay() {
   appState.helpOpen = false;
   el.helpOverlay.classList.add('hidden');
   if (appState.currentTable && appState.gameStatus === 'in_game') {
-    canvas.focus();
+    focusBoardForA11y({
+      announceOnFocus: true
+    });
   } else {
     el.tableList.focus();
   }
@@ -1034,7 +1301,9 @@ function closeAnnouncementOverlay(restoreFocus) {
   }
 
   if (appState.currentTable && appState.gameStatus === 'in_game') {
-    canvas.focus();
+    focusBoardForA11y({
+      announceOnFocus: true
+    });
   }
 }
 
@@ -1069,9 +1338,11 @@ function render() {
     }
     el.startGameBtn.disabled = !appState.isHost || appState.currentTable.players.length < 2 || appState.gameStatus === 'in_game';
     setTableStatus(appState.tableStatusMessage, appState.tableStatusTone);
+    setPlayDirectionIndicator();
     setRoundResult(appState.roundResultMessage);
   } else {
     setTableStatus('Join a table to start playing.', 'info');
+    setPlayDirectionIndicator();
     setRoundResult('');
   }
 
@@ -1779,6 +2050,9 @@ socket.on('tableState', function (payload) {
     appState.gameStatus = 'waiting';
     appState.turn = false;
     appState.currentTurnPlayerId = null;
+    appState.nextPlayerId = null;
+    appState.nextPlayerName = '';
+    appState.playDirection = 'clockwise';
     appState.turnIndicatorText = '';
     appState.suppressTurnAnnouncementForPlayerId = null;
     appState.lastAnnouncedTurnPlayerId = null;
@@ -1797,6 +2071,9 @@ socket.on('tableState', function (payload) {
   if (payload.table.status !== 'in_game') {
     appState.turn = false;
     appState.currentTurnPlayerId = null;
+    appState.nextPlayerId = null;
+    appState.nextPlayerName = '';
+    appState.playDirection = 'clockwise';
     appState.turnIndicatorText = '';
     appState.suppressTurnAnnouncementForPlayerId = null;
     appState.lastAnnouncedTurnPlayerId = null;
@@ -1812,6 +2089,7 @@ socket.on('tableState', function (payload) {
       setTableStatus('Waiting for the host to start the next game.', 'info');
     }
   } else if (!appState.currentTurnPlayerId) {
+    appState.playDirection = normalizeDirection(appState.playDirection);
     closeAnnouncementOverlay(false);
     setTableStatus('Game in progress. Waiting for the next turn update.', 'info');
   }
@@ -1820,7 +2098,9 @@ socket.on('tableState', function (payload) {
 
   if (enteredInGame) {
     window.requestAnimationFrame(function () {
-      canvas.focus();
+      focusBoardForA11y({
+        announceOnFocus: true
+      });
     });
   }
 });
@@ -1925,7 +2205,13 @@ socket.on('turnTransition', function (payload) {
   }
 
   appState.suppressTurnAnnouncementForPlayerId = payload.nextPlayerId || null;
+  appState.nextPlayerId = payload.nextPlayerId || null;
+  appState.nextPlayerName = payload.nextPlayerName || '';
+  if (payload.direction) {
+    appState.playDirection = normalizeDirection(payload.direction);
+  }
   setTableStatus(message, payload.nextPlayerId === socket.id ? 'alert' : 'info');
+  setPlayDirectionIndicator();
   srSpeak(message, payload.nextPlayerId === socket.id ? 'assertive' : 'polite', { canInterruptLock: true });
 });
 
@@ -1939,6 +2225,8 @@ socket.on('turnPlayer', function (payload) {
   appState.currentTurnPlayerId = payload.id;
   appState.turn = payload.id === socket.id;
   appState.currentTurnPlayerName = payload.name || '';
+  appState.nextPlayerId = payload.id;
+  appState.nextPlayerName = payload.name || '';
   appState.currentTurnTopDiscard = payload.topDiscard || '';
 
   const indicatorText = appState.turn ? 'Your turn' : ((payload.name || 'Another player') + "'s turn");
@@ -1975,6 +2263,7 @@ socket.on('turnPlayer', function (payload) {
     }
   }
 
+  setPlayDirectionIndicator();
   renderPlayerSummary();
 });
 
@@ -2087,8 +2376,9 @@ socket.on('roundSummary', function (summary) {
   }).join(', ');
 
   const roundNumber = summary.roundNumber || 1;
-  const headline = 'Round ' + roundNumber + ' was won by ' + summary.winner + ' with ' + summary.roundPoints + ' points.';
-  const msg = headline + (scoreText ? ' Scores: ' + scoreText : '') + ' Press Enter to continue.';
+  const headline = summary.winner + ' won Round ' + roundNumber + '.';
+  const detail = summary.winner + ' scored ' + summary.roundPoints + ' points this round.';
+  const msg = headline + ' ' + detail + (scoreText ? ' Scores: ' + scoreText : '') + ' Press Enter to continue.';
 
   appState.currentTurnPlayerId = null;
   appState.lastAnnouncedTurnPlayerId = null;
