@@ -24,7 +24,7 @@ const DISCONNECT_GRACE_MS = Math.max(1000, parseInt(process.env.DISCONNECT_GRACE
 const ACCOUNT_FILE_PATH = path.join(__dirname, 'data', 'accounts.json');
 const DEFAULT_GAME_TYPE = 'uno';
 const GAME_DEFINITIONS = {
-  uno: { type: 'uno', name: 'UNO', playable: true },
+  uno: { type: 'uno', name: 'Lumo', playable: true },
   hearts: { type: 'hearts', name: 'Hearts', playable: false },
   spades: { type: 'spades', name: 'Spades', playable: false },
   cribbage: { type: 'cribbage', name: 'Cribbage', playable: false }
@@ -327,6 +327,16 @@ function createTableId() {
   return prefix + suffix;
 }
 
+// Give Plus One cards live in their own ID range (GIVE_PLUS_ONE_BASE..+3, one per
+// color) so the existing color*14+value scheme used for numbered/action cards does
+// not need to be renumbered. isGivePlusOneCard()/COLOR_NAMES below decode it.
+const GIVE_PLUS_ONE_BASE = 1000;
+const COLOR_NAMES = ['red', 'yellow', 'green', 'blue'];
+
+function isGivePlusOneCard(card) {
+  return typeof card === 'number' && card >= GIVE_PLUS_ONE_BASE && card < GIVE_PLUS_ONE_BASE + COLOR_NAMES.length;
+}
+
 function createDeck() {
   const deck = [];
   for (let color = 0; color < 4; color++) {
@@ -338,15 +348,22 @@ function createDeck() {
   }
 
   // Wild cards: one per color slot (all render identically), floor(card/14) < 4
-  // so cardType() classifies them as 'Wild'. Four total, matching a real UNO deck.
+  // so cardType() classifies them as 'Wild'. Four total, matching a real Lumo deck.
   for (let color = 0; color < 4; color++) {
     deck.push(color * 14 + 13);
   }
 
   // Wild Draw Four: floor(card/14) >= 4 so cardType() classifies them as 'Draw4'.
-  // Four total, matching a real UNO deck.
+  // Four total, matching a real Lumo deck.
   for (let color = 0; color < 4; color++) {
     deck.push((4 + color) * 14 + 13);
+  }
+
+  // Give Plus One: two per color, matching the Skip/Reverse/Draw Two count. Brings
+  // the deck to 116 cards, matching public/lumo-rules.md.
+  for (let color = 0; color < 4; color++) {
+    deck.push(GIVE_PLUS_ONE_BASE + color);
+    deck.push(GIVE_PLUS_ONE_BASE + color);
   }
 
   return deck;
@@ -362,6 +379,10 @@ function shuffle(deck) {
 }
 
 function cardColor(card) {
+  if (isGivePlusOneCard(card)) {
+    return COLOR_NAMES[card - GIVE_PLUS_ONE_BASE];
+  }
+
   if (card % 14 === 13) {
     return 'black';
   }
@@ -428,6 +449,10 @@ function hasPlayableCard(table, hand) {
 }
 
 function cardType(card) {
+  if (isGivePlusOneCard(card)) {
+    return 'GivePlusOne';
+  }
+
   switch (card % 14) {
     case 10:
       return 'Skip';
@@ -460,6 +485,10 @@ function formatCardTypeForNarration(type) {
 
   if (type === 'Draw4') {
     return 'Draw Four';
+  }
+
+  if (type === 'GivePlusOne') {
+    return 'Give Plus One';
   }
 
   return type;
@@ -574,6 +603,31 @@ function buildStackStatePayload(table, viewerId) {
   };
 }
 
+function createInactiveGiveState() {
+  return {
+    active: false,
+    isGiver: false,
+    isReceiver: false,
+    fromPlayerName: '',
+    toPlayerName: ''
+  };
+}
+
+function buildGivePendingStatePayload(table, viewerId) {
+  if (!table || !table.game || !table.game.pendingGive) {
+    return createInactiveGiveState();
+  }
+
+  const pending = table.game.pendingGive;
+  return {
+    active: true,
+    isGiver: viewerId === pending.fromPlayerId,
+    isReceiver: viewerId === pending.toPlayerId,
+    fromPlayerName: pending.fromPlayerName,
+    toPlayerName: pending.toPlayerName
+  };
+}
+
 function clearActiveStack(table) {
   if (!table || !table.game) {
     return;
@@ -606,7 +660,7 @@ function activateStack(table, currentPlayer, card, chosenColor) {
   };
 }
 
-function resolveStackPenalty(table, options) {
+function resolveStackPenalty(table) {
   if (!table || !table.game || !table.game.stack || !table.game.stack.active) {
     return false;
   }
@@ -619,7 +673,6 @@ function resolveStackPenalty(table, options) {
   }
 
   const stack = table.game.stack;
-  const automatic = !!(options && options.automatic);
   const stackLabel = getStackTypeLabel(stack.type);
   const activeColorText = stack.type === 'Draw4' && stack.activeColor ? (' ' + capitalizeWord(stack.activeColor) + ' remains the active color.') : '';
   const nextIndex = getNextPlayerIndex(table, playerIndex, 1);
@@ -631,9 +684,7 @@ function resolveStackPenalty(table, options) {
   drawCardsFromDeck(table, playerIndex, stack.penalty);
   io.to(player.id).emit('haveCard', player.hand);
 
-  const transitionMessage = automatic
-    ? (player.name + ' cannot continue the stack. ' + player.name + ' draws ' + stack.penalty + ' cards and loses their turn.' + activeColorText)
-    : (player.name + ' accepts the accumulated penalty. ' + player.name + ' draws ' + stack.penalty + ' cards and loses their turn.' + activeColorText);
+  const transitionMessage = player.name + ' draws ' + stack.penalty + ' cards and loses their turn.' + activeColorText;
 
   if (roundEndPending && player.id !== stack.starterId && starterIndex >= 0) {
     clearActiveStack(table);
@@ -645,7 +696,6 @@ function resolveStackPenalty(table, options) {
       stackPenalty: stack.penalty,
       stackLabel: stackLabel,
       stackActiveColor: stack.activeColor || null,
-      automatic: automatic,
       nextPlayerId: starterPlayer ? starterPlayer.id : null,
       nextPlayerName: starterPlayer ? starterPlayer.name : '',
       message: transitionMessage + (starterPlayer ? ' ' + starterPlayer.name + ' wins the round.' : '')
@@ -667,7 +717,6 @@ function resolveStackPenalty(table, options) {
     stackPenalty: stack.penalty,
     stackLabel: stackLabel,
     stackActiveColor: stack.activeColor || null,
-    automatic: automatic,
     nextPlayerId: nextPlayer ? nextPlayer.id : null,
     nextPlayerName: nextPlayer ? nextPlayer.name : '',
     message: transitionMessage + (nextPlayer ? ' It is ' + nextPlayer.name + "'s turn." : '')
@@ -680,6 +729,10 @@ function resolveStackPenalty(table, options) {
 function cardScore(card) {
   if (typeof card !== 'number') {
     return 0;
+  }
+
+  if (isGivePlusOneCard(card)) {
+    return 10;
   }
 
   if (cardColor(card) === 'black') {
@@ -750,7 +803,8 @@ function initializeGameState(table) {
     roundNumber: 1,
     startingPlayerIndex: 0,
     lastRoundPoints: {},
-    stack: createInactiveStackState()
+    stack: createInactiveStackState(),
+    pendingGive: null
   };
 
   shuffle(table.game.deck);
@@ -803,6 +857,7 @@ function beginRound(table, options) {
   table.game.locked = false;
   table.game.lastRoundPoints = {};
   table.game.stack = createInactiveStackState();
+  table.game.pendingGive = null;
 
   table.players.forEach(function (player) {
     player.hand = [];
@@ -918,6 +973,7 @@ function buildTableState(table, socketId) {
       roundNumber: table.status === 'in_game' && table.game ? (table.game.roundNumber || 1) : null,
       matchSettings: matchSettings,
       stackState: buildStackStatePayload(table, socketId),
+      givePendingState: buildGivePendingStatePayload(table, socketId),
       players: table.players.map(function (player) {
         return {
           id: player.id,
@@ -973,22 +1029,24 @@ function emitTurnPlayer(table) {
     return;
   }
 
-  if (table.game && table.game.stack && table.game.stack.active && !hasLegalStackCard(table, currentPlayer.hand, table.game.stack.type)) {
-    resolveStackPenalty(table, { automatic: true });
-    return;
-  }
-
+  // A player with no legal stack continuation must explicitly draw (acceptStackPenalty)
+  // rather than being auto-resolved here - inspecting their hand to decide for them
+  // would leak whether they hold a Draw Two / Wild Draw Four to anyone watching the
+  // resulting transition. Each recipient also gets their own stackState so only the
+  // affected player learns whether they can continue.
   const canPlay = hasPlayableCard(table, currentPlayer.hand);
-  const payload = {
-    id: currentPlayer.id,
-    name: currentPlayer.name,
-    canPlay: canPlay,
-    mustDraw: !canPlay,
-    topDiscard: describeCard(table.game.cardOnBoard, table.game.chosenColor),
-    stackState: buildStackStatePayload(table, currentPlayer.id)
-  };
+  const topDiscard = describeCard(table.game.cardOnBoard, table.game.chosenColor);
 
-  io.to(table.id).emit('turnPlayer', payload);
+  table.players.forEach(function (player) {
+    io.to(player.id).emit('turnPlayer', {
+      id: currentPlayer.id,
+      name: currentPlayer.name,
+      canPlay: canPlay,
+      mustDraw: !canPlay,
+      topDiscard: topDiscard,
+      stackState: buildStackStatePayload(table, player.id)
+    });
+  });
 }
 
 function emitTurnTransition(table, transition) {
@@ -1015,8 +1073,7 @@ function emitTurnTransition(table, transition) {
       stackType: transition.stackType || null,
       stackPenalty: transition.stackPenalty || 0,
       stackActiveColor: transition.stackActiveColor || null,
-      stackMessage: transition.stackMessage || '',
-      automatic: !!transition.automatic
+      stackMessage: transition.stackMessage || ''
     };
 
     if (transition.draw) {
@@ -1189,6 +1246,12 @@ function handlePlayerRemovalFromGame(table, removedIndex, playerName) {
   }
 
   const removedPlayer = table.players[removedIndex];
+
+  if (table.game.pendingGive && removedPlayer
+    && (table.game.pendingGive.fromPlayerId === removedPlayer.id || table.game.pendingGive.toPlayerId === removedPlayer.id)) {
+    table.game.pendingGive = null;
+  }
+
   if (removedPlayer && removedPlayer.hand.length) {
     removedPlayer.hand.forEach(function (card) {
       table.game.deck.push(card);
@@ -1317,6 +1380,9 @@ function onConnection(socket) {
         }
         if (payload.game.stack) {
           table.game.stack = Object.assign(createInactiveStackState(), payload.game.stack);
+        }
+        if (payload.game.pendingGive) {
+          table.game.pendingGive = Object.assign({}, payload.game.pendingGive);
         }
         if (typeof payload.game.locked === 'boolean') {
           table.game.locked = payload.game.locked;
@@ -1767,6 +1833,11 @@ function onConnection(socket) {
       return;
     }
 
+    if (table.game.pendingGive) {
+      socket.emit('drawResult', { success: false, message: 'Choose a card to give before doing anything else' });
+      return;
+    }
+
     if (table.game.hasDrawn) {
       socket.emit('drawResult', { success: false, message: 'You already drew this turn' });
       return;
@@ -1844,7 +1915,12 @@ function onConnection(socket) {
       return;
     }
 
-    resolveStackPenalty(table, { automatic: false });
+    if (table.game.pendingGive) {
+      socket.emit('playResult', { success: false, message: 'Choose a card to give before doing anything else' });
+      return;
+    }
+
+    resolveStackPenalty(table);
   });
 
   socket.on('playCard', function (payload) {
@@ -1858,6 +1934,11 @@ function onConnection(socket) {
     const currentPlayer = table.players[currentPlayerIndex];
     if (!currentPlayer || currentPlayer.id !== socket.id) {
       socket.emit('playResult', { success: false, message: 'It is not your turn' });
+      return;
+    }
+
+    if (table.game.pendingGive) {
+      socket.emit('playResult', { success: false, message: 'Choose a card to give before doing anything else' });
       return;
     }
 
@@ -1888,7 +1969,7 @@ function onConnection(socket) {
       if (!canContinueStack) {
         socket.emit('playResult', {
           success: false,
-          message: 'Only another ' + getStackTypeLabel(activeStack.type) + ' can continue the current stack'
+          message: 'You must play a ' + getStackTypeLabel(activeStack.type) + ' or draw the accumulated penalty.'
         });
         return;
       }
@@ -1932,7 +2013,7 @@ function onConnection(socket) {
     const willContinueStack = !!activeStack && canContinueStack;
 
     if (currentPlayer.hand.length === 1) {
-      io.to(table.id).emit('actionNotice', currentPlayer.name + ' says UNO');
+      io.to(table.id).emit('actionNotice', currentPlayer.name + ' says Lumo');
     }
 
     if (currentPlayer.hand.length === 0 && !stackWillBeActive) {
@@ -1940,6 +2021,31 @@ function onConnection(socket) {
       socket.to(table.id).emit('cardPlayed', { description: cardDescription });
       clearActiveStack(table);
       endRound(table, currentPlayerIndex, 'all_cards_played');
+      return;
+    }
+
+    // A Give Plus One that would leave exactly one card cannot give that last card
+    // away (public/lumo-rules.md), so it plays like a normal card below: no transfer,
+    // turn just advances. With two or more cards left, pause here for the giver to
+    // choose - the turn does not advance until submitGiveCard resolves it.
+    if (type === 'GivePlusOne' && currentPlayer.hand.length >= 2 && nextPlayerAfterPlay) {
+      const giveColor = cardColor(card);
+      table.game.pendingGive = {
+        fromPlayerId: currentPlayer.id,
+        fromPlayerName: currentPlayer.name,
+        toPlayerId: nextPlayerAfterPlay.id,
+        toPlayerName: nextPlayerAfterPlay.name,
+        color: giveColor
+      };
+
+      socket.emit('playResult', {
+        success: true,
+        card: card,
+        message: 'You play a ' + giveColor + ' Give Plus One. Choose a card to give to ' + nextPlayerAfterPlay.name + '.'
+      });
+      socket.emit('giveCardPrompt', { toPlayerName: nextPlayerAfterPlay.name });
+      socket.to(table.id).emit('actionNotice', currentPlayer.name + ' plays a ' + giveColor + ' Give Plus One.');
+      emitTableState(table);
       return;
     }
 
@@ -2049,6 +2155,71 @@ function onConnection(socket) {
     emitTurnPlayer(table);
   });
 
+  socket.on('submitGiveCard', function (payload) {
+    const table = findTableBySocket(socket);
+    if (!table || table.status !== 'in_game' || !table.game || !table.game.pendingGive) {
+      socket.emit('playResult', { success: false, message: 'There is no pending card to give right now' });
+      return;
+    }
+
+    const pending = table.game.pendingGive;
+    if (pending.fromPlayerId !== socket.id) {
+      socket.emit('playResult', { success: false, message: 'It is not your turn to choose a card to give' });
+      return;
+    }
+
+    const giver = table.players[getPlayerIndex(table, pending.fromPlayerId)];
+    const receiver = table.players[getPlayerIndex(table, pending.toPlayerId)];
+    if (!giver || !receiver) {
+      table.game.pendingGive = null;
+      socket.emit('playResult', { success: false, message: 'Unable to complete the card transfer' });
+      return;
+    }
+
+    const card = payload ? parseInt(payload.card, 10) : NaN;
+    const cardPos = giver.hand.indexOf(card);
+
+    // The card just played is already on the discard pile and out of the giver's
+    // hand, so this membership check alone keeps it from being given away too.
+    if (Number.isNaN(card) || cardPos === -1) {
+      socket.emit('playResult', { success: false, message: 'Choose a card from your hand to give' });
+      return;
+    }
+
+    giver.hand.splice(cardPos, 1);
+    receiver.hand.push(card);
+    table.game.pendingGive = null;
+
+    io.to(giver.id).emit('haveCard', giver.hand);
+    io.to(receiver.id).emit('haveCard', receiver.hand);
+
+    const cardDescription = describeCardForAnnouncement(card);
+    advanceTurn(table, 1);
+    emitTableState(table);
+
+    table.players.forEach(function (player) {
+      let message;
+      if (player.id === giver.id) {
+        message = 'You give ' + cardDescription + ' to ' + receiver.name + ". It is " + receiver.name + "'s turn.";
+      } else if (player.id === receiver.id) {
+        message = 'You receive ' + cardDescription + ' from ' + giver.name + '. It is your turn.';
+      } else {
+        message = giver.name + ' plays a ' + pending.color + ' Give Plus One and gives one card to ' + receiver.name + ". It is " + receiver.name + "'s turn.";
+      }
+
+      io.to(player.id).emit('turnTransition', {
+        action: 'give_resolve',
+        actorId: giver.id,
+        actorName: giver.name,
+        nextPlayerId: receiver.id,
+        nextPlayerName: receiver.name,
+        message: message
+      });
+    });
+
+    emitTurnPlayer(table);
+  });
+
   socket.on('disconnecting', function () {
     // Handled in `disconnect` where a reason is available.
   });
@@ -2063,4 +2234,18 @@ function onConnection(socket) {
 
     console.log('Player disconnected:', socket.id, socket.playerName || 'unknown', reason || 'unknown reason');
   });
+}
+
+// Exposed only for direct in-process testing of card-model logic (deck
+// composition, scoring, etc.) - requiring this file still starts the HTTP/Socket.IO
+// server as normal, this just additionally exposes a few pure helpers.
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = {
+    createDeck: createDeck,
+    cardColor: cardColor,
+    cardType: cardType,
+    cardScore: cardScore,
+    describeCard: describeCard,
+    isGivePlusOneCard: isGivePlusOneCard
+  };
 }

@@ -2,8 +2,6 @@ const socket = io({ autoConnect: true });
 
 const canvas = document.getElementById('canvas');
 const ctx = canvas.getContext('2d');
-const cards = new Image();
-const back = new Image();
 
 const cdWidth = 240;
 const cdHeight = 360;
@@ -12,11 +10,72 @@ const displayNameStorageKey = 'unoDisplayName';
 const rememberTokenStorageKey = 'unoRememberToken';
 
 const GAME_CATALOG = {
-  uno: { type: 'uno', name: 'UNO', playable: true, description: 'Join a live UNO table.' },
+  uno: { type: 'uno', name: 'Lumo', playable: true, description: 'Join a live Lumo table.' },
   hearts: { type: 'hearts', name: 'Hearts', playable: false, description: 'Hearts is not implemented yet.' },
   spades: { type: 'spades', name: 'Spades', playable: false, description: 'Spades is not implemented yet.' },
   cribbage: { type: 'cribbage', name: 'Cribbage', playable: false, description: 'Cribbage is not implemented yet.' }
 };
+
+// Lumo card artwork: one SVG file per card in public/images/lumo/cards (see
+// FILE_LIST.txt there). Images are loaded lazily and cached by filename since,
+// unlike the old UNO sprite sheet, each card is now its own file.
+const CARD_IMAGE_BASE = 'images/lumo/cards/';
+const cardImageCache = {};
+
+function getCardImageFileName(card) {
+  if (card === 'back') {
+    return 'card_back.svg';
+  }
+
+  const type = cardType(card);
+  if (type === 'Wild') {
+    return 'wild.svg';
+  }
+  if (type === 'Draw4') {
+    return 'wild_draw_plus_4.svg';
+  }
+
+  const color = cardColor(card);
+  if (type === 'Skip') {
+    return color + '_skip.svg';
+  }
+  if (type === 'Reverse') {
+    return color + '_reverse.svg';
+  }
+  if (type === 'Draw2') {
+    return color + '_draw_plus_2.svg';
+  }
+  if (type === 'GivePlusOne') {
+    return color + '_give_plus_1.svg';
+  }
+
+  return color + '_' + (card % 14) + '.svg';
+}
+
+function redrawBoard() {
+  if (!appState.currentTable || appState.gameStatus !== 'in_game') {
+    return;
+  }
+
+  drawHand();
+  if (typeof appState.discard === 'number') {
+    drawDiscard(appState.discard);
+  }
+  drawDeckBack();
+  drawTurnIndicator(appState.turnIndicatorText);
+}
+
+function getCardImage(card) {
+  const filename = getCardImageFileName(card);
+  let image = cardImageCache[filename];
+  if (!image) {
+    image = new Image();
+    image.addEventListener('load', redrawBoard);
+    image.src = CARD_IMAGE_BASE + filename;
+    cardImageCache[filename] = image;
+  }
+  return image;
+}
 
 const appState = {
   loggedIn: false,
@@ -55,6 +114,9 @@ const appState = {
   announcementKind: null,
   pendingWildCard: null,
   colorPickerReturnFocusEl: null,
+  givePickerOpen: false,
+  rulesOpen: false,
+  rulesReturnFocusEl: null,
   pendingRoundDealAnnouncement: false,
   roundResultMessage: '',
   speechLockUntil: 0,
@@ -76,6 +138,7 @@ const el = {
   lobbyView: document.getElementById('lobby-view'),
   tableView: document.getElementById('table-view'),
   gamePanel: document.getElementById('game-panel'),
+  authStatus: document.getElementById('auth-status'),
   emailInput: document.getElementById('email-input'),
   passwordInput: document.getElementById('password-input'),
   displayNameInput: document.getElementById('display-name-input'),
@@ -121,6 +184,15 @@ const el = {
   colorPickerFieldset: document.getElementById('color-picker-fieldset'),
   colorPickerConfirmBtn: document.getElementById('color-picker-confirm-btn'),
   colorPickerCancelBtn: document.getElementById('color-picker-cancel-btn'),
+  giveCardOverlay: document.getElementById('give-card-overlay'),
+  giveCardInstructions: document.getElementById('give-card-instructions'),
+  giveCardFieldset: document.getElementById('give-card-fieldset'),
+  giveCardConfirmBtn: document.getElementById('give-card-confirm-btn'),
+  openRulesBtn: document.getElementById('open-rules-btn'),
+  rulesOverlay: document.getElementById('rules-overlay'),
+  rulesTitle: document.getElementById('rules-title'),
+  rulesContent: document.getElementById('rules-content'),
+  closeRulesBtn: document.getElementById('close-rules-btn'),
   newTableWinningScore: document.getElementById('new-table-winning-score'),
   newTableMaxRounds: document.getElementById('new-table-max-rounds'),
   allowDrawTwoStacking: document.getElementById('allow-draw-two-stacking'),
@@ -129,6 +201,15 @@ const el = {
   stackStatus: document.getElementById('stack-status'),
   acceptStackBtn: document.getElementById('accept-stack-btn')
 };
+
+function setAuthStatus(message, tone) {
+  if (!el.authStatus) {
+    return;
+  }
+
+  el.authStatus.textContent = message || '';
+  el.authStatus.className = 'table-status' + (message ? ' ' + (tone || 'info') : '');
+}
 
 function setTableStatus(message, tone) {
   appState.tableStatusMessage = message || '';
@@ -311,7 +392,8 @@ function focusBoardForA11y(options) {
     return;
   }
 
-  if (appState.helpOpen || appState.announcementOpen || (el.colorPickerOverlay && !el.colorPickerOverlay.classList.contains('hidden'))) {
+  if (appState.helpOpen || appState.announcementOpen || appState.givePickerOpen || appState.rulesOpen
+    || (el.colorPickerOverlay && !el.colorPickerOverlay.classList.contains('hidden'))) {
     return;
   }
 
@@ -476,7 +558,7 @@ function openGamePlaceholder(gameType) {
     el.placeholderTitle.textContent = gameDefinition.name;
   }
   if (el.placeholderMessage) {
-    el.placeholderMessage.textContent = gameDefinition.description + ' UNO is the only playable game right now.';
+    el.placeholderMessage.textContent = gameDefinition.description + ' Lumo is the only playable game right now.';
   }
   window.setTimeout(function () {
     if (el.placeholderBackBtn) {
@@ -507,8 +589,7 @@ function selectGame(gameType) {
 }
 
 function init() {
-  cards.src = 'images/deck.svg';
-  back.src = 'images/uno.svg';
+  getCardImage('back');
   canvas.style.backgroundColor = '#10ac84';
 
   try {
@@ -563,13 +644,29 @@ function bindUi() {
   });
   bindPress(el.colorPickerConfirmBtn, confirmColorPicker);
   bindPress(el.colorPickerCancelBtn, cancelColorPicker);
+  bindPress(el.giveCardConfirmBtn, confirmGiveCard);
   bindPress(el.acceptStackBtn, acceptStackPenalty);
+  bindPress(el.openRulesBtn, openRulesOverlay);
+  bindPress(el.closeRulesBtn, closeRulesOverlay);
+  el.rulesOverlay.addEventListener('keydown', function (event) {
+    if (event.key === 'Escape') {
+      closeRulesOverlay();
+      event.preventDefault();
+    }
+  });
   el.colorPickerOverlay.addEventListener('keydown', function (event) {
     if (event.key === 'Enter') {
       confirmColorPicker();
       event.preventDefault();
     } else if (event.key === 'Escape') {
       cancelColorPicker();
+      event.preventDefault();
+    }
+  });
+
+  el.giveCardOverlay.addEventListener('keydown', function (event) {
+    if (event.key === 'Enter') {
+      confirmGiveCard();
       event.preventDefault();
     }
   });
@@ -748,7 +845,7 @@ function createTable() {
   const selectedGameType = appState.selectedGameType || 'uno';
   const selectedGame = getGameDefinition(selectedGameType);
   if (!selectedGame || !selectedGame.playable) {
-    srSpeak('Select UNO to create a playable table', 'assertive');
+    srSpeak('Select Lumo to create a playable table', 'assertive');
     return;
   }
 
@@ -827,7 +924,7 @@ function onMouseClick(event) {
     return;
   }
 
-  if (appState.helpOpen) {
+  if (appState.helpOpen || appState.givePickerOpen || appState.rulesOpen) {
     return;
   }
 
@@ -1068,6 +1165,10 @@ function getCardScoreValue(card) {
     return card % 14;
   }
 
+  if (type === 'GivePlusOne') {
+    return 10;
+  }
+
   if (type === 'Skip' || type === 'Reverse' || type === 'Draw2') {
     return 20;
   }
@@ -1136,8 +1237,8 @@ function announcePlayableCardsAndSelectByScore(wantHighest) {
   drawHand();
 
   const listText = playable.map(function (entry) {
-    return describeCardForSpeech(entry.card) + ' ' + entry.score;
-  }).join('. ');
+    return describeCardForSpeech(entry.card);
+  }).join(', ');
   const selectedText = describeCardForSpeech(selected.card) + ' selected.';
   const intro = wantHighest
     ? 'Playable cards, highest score first:'
@@ -1240,6 +1341,203 @@ function confirmColorPicker() {
 function cancelColorPicker() {
   closeColorPicker();
   srSpeak('Wild color selection canceled', 'assertive');
+}
+
+function populateGiveCardFieldset() {
+  el.giveCardFieldset.innerHTML = '';
+
+  appState.hand.forEach(function (card, index) {
+    const label = document.createElement('label');
+    label.className = 'give-card-option';
+
+    const input = document.createElement('input');
+    input.type = 'radio';
+    input.name = 'give-card-choice';
+    input.value = String(index);
+    if (index === 0) {
+      input.checked = true;
+    }
+
+    label.appendChild(input);
+    label.appendChild(document.createTextNode(' ' + describeCardForSpeech(card)));
+    el.giveCardFieldset.appendChild(label);
+  });
+}
+
+function openGiveCardPicker(toPlayerName) {
+  const recipientName = toPlayerName || 'the next player';
+  appState.givePickerOpen = true;
+
+  if (el.giveCardInstructions) {
+    el.giveCardInstructions.textContent = 'Choose a card to give to ' + recipientName + '. This card is transferred to their hand; it does not end your turn until you choose.';
+  }
+
+  populateGiveCardFieldset();
+  el.giveCardOverlay.classList.remove('hidden');
+
+  const firstRadio = el.giveCardFieldset.querySelector('input[type="radio"]');
+  if (firstRadio) {
+    firstRadio.focus();
+  }
+
+  srSpeak('Choose a card to give to ' + recipientName + '.', 'assertive', { canInterruptLock: true });
+}
+
+function closeGiveCardPicker() {
+  appState.givePickerOpen = false;
+  el.giveCardOverlay.classList.add('hidden');
+}
+
+function confirmGiveCard() {
+  const selected = el.giveCardFieldset.querySelector('input[type="radio"]:checked');
+  if (!selected) {
+    srSpeak('Select a card to give first', 'assertive', { canInterruptLock: true });
+    return;
+  }
+
+  const index = parseInt(selected.value, 10);
+  const card = appState.hand[index];
+  closeGiveCardPicker();
+
+  if (typeof card !== 'number') {
+    return;
+  }
+
+  socket.emit('submitGiveCard', { card: card });
+  focusBoardForA11y({ announceOnFocus: false });
+}
+
+let lumoRulesHtmlCache = null;
+
+function escapeHtml(text) {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+function inlineMarkdownFormat(text) {
+  return escapeHtml(text).replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+}
+
+// Small dependency-free renderer for the fixed structure of lumo-rules.md
+// (#/##/### headings, "- " bullet lists, **bold**, plain paragraphs). The
+// document's own top-level "# Lumo Rules" heading is dropped since the dialog
+// already provides that heading for focus purposes.
+function renderLumoRulesMarkdown(markdown) {
+  const lines = markdown.replace(/\r\n/g, '\n').split('\n');
+  const htmlParts = [];
+  let listOpen = false;
+  let paragraphBuffer = [];
+  let skippedTopHeading = false;
+
+  function flushParagraph() {
+    if (paragraphBuffer.length) {
+      htmlParts.push('<p>' + paragraphBuffer.join(' ') + '</p>');
+      paragraphBuffer = [];
+    }
+  }
+
+  function closeListIfOpen() {
+    if (listOpen) {
+      htmlParts.push('</ul>');
+      listOpen = false;
+    }
+  }
+
+  lines.forEach(function (rawLine) {
+    const line = rawLine.trim();
+
+    if (!line) {
+      flushParagraph();
+      closeListIfOpen();
+      return;
+    }
+
+    const headingMatch = line.match(/^(#{1,3})\s+(.*)$/);
+    if (headingMatch) {
+      flushParagraph();
+      closeListIfOpen();
+
+      if (!skippedTopHeading && headingMatch[1].length === 1) {
+        skippedTopHeading = true;
+        return;
+      }
+
+      const level = Math.min(6, headingMatch[1].length + 2);
+      htmlParts.push('<h' + level + '>' + inlineMarkdownFormat(headingMatch[2]) + '</h' + level + '>');
+      return;
+    }
+
+    const bulletMatch = line.match(/^[-*]\s+(.*)$/);
+    if (bulletMatch) {
+      flushParagraph();
+      if (!listOpen) {
+        htmlParts.push('<ul>');
+        listOpen = true;
+      }
+      htmlParts.push('<li>' + inlineMarkdownFormat(bulletMatch[1]) + '</li>');
+      return;
+    }
+
+    if (/^-{3,}$/.test(line)) {
+      return;
+    }
+
+    closeListIfOpen();
+    paragraphBuffer.push(inlineMarkdownFormat(line));
+  });
+
+  flushParagraph();
+  closeListIfOpen();
+  return htmlParts.join('\n');
+}
+
+function openRulesOverlay() {
+  appState.rulesOpen = true;
+  appState.rulesReturnFocusEl = document.activeElement && typeof document.activeElement.focus === 'function'
+    ? document.activeElement
+    : null;
+
+  el.rulesOverlay.classList.remove('hidden');
+  el.rulesTitle.focus();
+  srSpeak('Lumo rules opened', 'assertive', { canInterruptLock: true });
+
+  if (lumoRulesHtmlCache) {
+    el.rulesContent.innerHTML = lumoRulesHtmlCache;
+    return;
+  }
+
+  el.rulesContent.innerHTML = '<p>Loading rules...</p>';
+
+  fetch('lumo-rules.md')
+    .then(function (response) {
+      if (!response.ok) {
+        throw new Error('Unable to load rules');
+      }
+      return response.text();
+    })
+    .then(function (markdown) {
+      lumoRulesHtmlCache = renderLumoRulesMarkdown(markdown);
+      el.rulesContent.innerHTML = lumoRulesHtmlCache;
+    })
+    .catch(function () {
+      el.rulesContent.innerHTML = '<p>Unable to load the Lumo rules right now. Please try again later.</p>';
+    });
+}
+
+function closeRulesOverlay() {
+  appState.rulesOpen = false;
+  el.rulesOverlay.classList.add('hidden');
+
+  const target = appState.rulesReturnFocusEl;
+  appState.rulesReturnFocusEl = null;
+
+  if (target && typeof target.focus === 'function' && document.contains(target)) {
+    target.focus();
+  } else if (el.openRulesBtn) {
+    el.openRulesBtn.focus();
+  }
 }
 
 function openHelpOverlay() {
@@ -1350,13 +1648,13 @@ function render() {
 
   if (el.gamePickerSummary) {
     el.gamePickerSummary.textContent = appState.selectedGameType
-      ? 'Selected game: ' + (getGameDefinition(appState.selectedGameType) || { name: 'UNO' }).name
-      : 'Pick a card game to continue. UNO is available now; the others are accessible previews for later work.';
+      ? 'Selected game: ' + (getGameDefinition(appState.selectedGameType) || { name: 'Lumo' }).name
+      : 'Pick a card game to continue. Lumo is available now; the others are accessible previews for later work.';
   }
 
   if (appState.currentTable) {
     el.gamePanel.classList.toggle('hidden', appState.gameStatus !== 'in_game');
-    el.tableMeta.textContent = (appState.currentTable.gameName || 'UNO') + ': ' + appState.currentTable.name + ' - ' + (appState.gameStatus === 'in_game' ? 'In game' : 'Waiting for players');
+    el.tableMeta.textContent = (appState.currentTable.gameName || 'Lumo') + ': ' + appState.currentTable.name + ' - ' + (appState.gameStatus === 'in_game' ? 'In game' : 'Waiting for players');
     el.tableHost.textContent = 'Host: ' + appState.currentTable.hostName;
     if (el.tableMatchSettings) {
       const matchSettings = appState.currentTable.matchSettings || { winningScore: 500, maxRounds: 30 };
@@ -1385,6 +1683,7 @@ function render() {
 
   renderLobbyTables();
   renderPlayerSummary();
+  renderStackControls();
 }
 
 function renderLobbyTables() {
@@ -1410,7 +1709,7 @@ function renderLobbyTables() {
     const li = document.createElement('li');
     li.className = 'table-item' + (index === appState.selectedLobbyIndex ? ' selected' : '');
     li.tabIndex = -1;
-    li.textContent = (table.gameName || 'UNO') + ' | ' + table.name + ' | ' + table.status + ' | ' + table.playerCount + '/' + table.maxPlayers + ' | Host: ' + table.hostName;
+    li.textContent = (table.gameName || 'Lumo') + ' | ' + table.name + ' | ' + table.status + ' | ' + table.playerCount + '/' + table.maxPlayers + ' | Host: ' + table.hostName;
     bindPress(li, function () {
       appState.selectedLobbyIndex = index;
       renderLobbyTables();
@@ -1448,8 +1747,8 @@ function renderPlayerSummary() {
       li.classList.add('current-turn');
     }
     if (hasUno) {
-      tags.push('UNO');
-      li.classList.add('uno');
+      tags.push('Lumo');
+      li.classList.add('lumo');
     }
 
     const countText = appState.gameStatus === 'in_game'
@@ -1460,8 +1759,8 @@ function renderPlayerSummary() {
     label.className = 'player-label';
     label.textContent = player.name;
     if (hasUno) {
-      unoBadge.className = 'uno-badge';
-      unoBadge.textContent = 'UNO';
+      unoBadge.className = 'lumo-badge';
+      unoBadge.textContent = 'Lumo';
       label.appendChild(document.createTextNode(' '));
       label.appendChild(unoBadge);
     }
@@ -1519,17 +1818,10 @@ function drawHand() {
     const x = (hand.length / 112) * (cdWidth / 3) + (canvas.width / (2 + (hand.length - 1))) * (i + 1) - (cdWidth / 4);
     const y = handTop;
 
-    ctx.drawImage(
-      cards,
-      1 + cdWidth * (hand[i] % 14),
-      1 + cdHeight * Math.floor(hand[i] / 14),
-      cdWidth,
-      cdHeight,
-      x,
-      y,
-      cdWidth / 2,
-      cdHeight / 2
-    );
+    const image = getCardImage(hand[i]);
+    if (image.complete && image.naturalWidth) {
+      ctx.drawImage(image, x, y, cdWidth / 2, cdHeight / 2);
+    }
 
     if (i === selectedIndex) {
       ctx.save();
@@ -1546,21 +1838,17 @@ function drawDiscard(cardNum) {
     return;
   }
 
-  ctx.drawImage(
-    cards,
-    1 + cdWidth * (cardNum % 14),
-    1 + cdHeight * Math.floor(cardNum / 14),
-    cdWidth,
-    cdHeight,
-    canvas.width / 2 - cdWidth / 4,
-    canvas.height / 2 - cdHeight / 4,
-    cdWidth / 2,
-    cdHeight / 2
-  );
+  const image = getCardImage(cardNum);
+  if (image.complete && image.naturalWidth) {
+    ctx.drawImage(image, canvas.width / 2 - cdWidth / 4, canvas.height / 2 - cdHeight / 4, cdWidth / 2, cdHeight / 2);
+  }
 }
 
 function drawDeckBack() {
-  ctx.drawImage(back, canvas.width - cdWidth / 2 - 60, canvas.height / 2 - cdHeight / 4, cdWidth / 2, cdHeight / 2);
+  const image = getCardImage('back');
+  if (image.complete && image.naturalWidth) {
+    ctx.drawImage(image, canvas.width - cdWidth / 2 - 60, canvas.height / 2 - cdHeight / 4, cdWidth / 2, cdHeight / 2);
+  }
 }
 
 function getDiscardTopY() {
@@ -1687,7 +1975,6 @@ function speakAllScores() {
 function getHandRank(card) {
   return getCardKindRank(card) * 100 + getCardValueSortRank(card);
 }
-  renderStackControls();
 
 function navigateToColorExtreme(color, wantHighest) {
   let bestIndex = -1;
@@ -1739,17 +2026,18 @@ function formatCardTypeForSpeech(type) {
     return 'Draw Four';
   }
 
+  if (type === 'GivePlusOne') {
+    return 'Give Plus One';
+  }
+
   return type;
 }
 
 function describeCardForSpeech(card, forcedColor) {
+  // Always speak the color, including "black" for an unplayed Wild/Draw Four - that
+  // is the card's real printed color until a player chooses its active color.
   const color = cardColor(card) === 'black' && forcedColor ? forcedColor : cardColor(card);
   const type = formatCardTypeForSpeech(cardType(card));
-
-  if (cardColor(card) === 'black') {
-    return color && color !== 'black' ? (type + ' ' + color) : type;
-  }
-
   return type + ' ' + color;
 }
 
@@ -1775,7 +2063,7 @@ function buildTurnTransitionMessage(payload) {
     return '';
   }
 
-  if ((payload.action === 'stack_resolve' || payload.stackMessage) && (payload.message || payload.stackMessage)) {
+  if ((payload.action === 'stack_resolve' || payload.action === 'give_resolve' || payload.stackMessage) && (payload.message || payload.stackMessage)) {
     return payload.message || payload.stackMessage;
   }
 
@@ -1890,7 +2178,20 @@ function srSpeak(text, priority, options) {
   }, 40);
 }
 
+// Give Plus One cards live outside the color*14+value numbering used by every
+// other card, in their own ID range (mirrors GIVE_PLUS_ONE_BASE in server.js).
+const GIVE_PLUS_ONE_BASE = 1000;
+const GIVE_PLUS_ONE_COLORS = ['red', 'yellow', 'green', 'blue'];
+
+function isGivePlusOneCard(num) {
+  return typeof num === 'number' && num >= GIVE_PLUS_ONE_BASE && num < GIVE_PLUS_ONE_BASE + GIVE_PLUS_ONE_COLORS.length;
+}
+
 function cardColor(num) {
+  if (isGivePlusOneCard(num)) {
+    return GIVE_PLUS_ONE_COLORS[num - GIVE_PLUS_ONE_BASE];
+  }
+
   if (num % 14 === 13) {
     return 'black';
   }
@@ -1914,6 +2215,10 @@ function cardColor(num) {
 }
 
 function cardType(num) {
+  if (isGivePlusOneCard(num)) {
+    return 'GivePlusOne';
+  }
+
   switch (num % 14) {
     case 10:
       return 'Skip';
@@ -1946,6 +2251,10 @@ function getColorSortRank(card) {
 }
 
 function getCardKindRank(card) {
+  if (isGivePlusOneCard(card)) {
+    return 1;
+  }
+
   if (cardColor(card) === 'black') {
     return 2;
   }
@@ -1954,6 +2263,10 @@ function getCardKindRank(card) {
 }
 
 function getCardValueSortRank(card) {
+  if (isGivePlusOneCard(card)) {
+    return 3;
+  }
+
   const value = card % 14;
   if (value <= 9) {
     return value;
@@ -2010,15 +2323,25 @@ socket.on('serverMessage', function (payload) {
 
 socket.on('loginResult', function (payload) {
   if (!payload || !payload.success) {
-    if (appState.resumeLoginPending) {
+    const message = payload && payload.message ? payload.message : 'Login failed';
+    const wasSilentResume = appState.resumeLoginPending;
+
+    if (wasSilentResume) {
       clearRememberedLogin();
       appState.resumeLoginPending = false;
+    } else {
+      // A silent remember-me resume attempt shouldn't flash an error the user
+      // never triggered, but an actual login/create-account click needs visible
+      // feedback - the sr-only announcement alone is invisible to sighted users.
+      setAuthStatus(message, 'alert');
     }
-    srSpeak(payload && payload.message ? payload.message : 'Login failed', 'assertive');
+
+    srSpeak(message, 'assertive');
     setScreen('auth');
     return;
   }
 
+  setAuthStatus('', 'info');
   const wasResumeLogin = appState.resumeLoginPending;
   appState.resumeLoginPending = false;
 
@@ -2065,6 +2388,7 @@ socket.on('logoutResult', function (payload) {
   appState.selectedGameName = '';
   appState.selectedLobbyIndex = 0;
   appState.lobbyTables = [];
+  setAuthStatus('', 'info');
   setScreen('auth');
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   closeAnnouncementOverlay(false);
@@ -2085,6 +2409,7 @@ socket.on('deleteAccountResult', function (payload) {
   appState.selectedGameName = '';
   appState.selectedLobbyIndex = 0;
   appState.lobbyTables = [];
+  setAuthStatus('', 'info');
   setScreen('auth');
 
   try {
@@ -2257,16 +2582,16 @@ socket.on('turnTransition', function (payload) {
     const actorName = payload.actorName || 'A player';
     const unoSpeech = window.CardTableUnoSpeech && typeof window.CardTableUnoSpeech.buildUnoSpeechText === 'function'
       ? window.CardTableUnoSpeech.buildUnoSpeechText(actorIsYou, actorName)
-      : (actorIsYou ? 'You say UNO!' : (actorName + ' says UNO!'));
+      : (actorIsYou ? 'You say Lumo!' : (actorName + ' says Lumo!'));
     const overlayMessage = typeof window.CardTableUnoSpeech !== 'undefined' && typeof window.CardTableUnoSpeech.buildUnoAnnouncementMessage === 'function'
       ? window.CardTableUnoSpeech.buildUnoAnnouncementMessage(message)
       : message;
 
     showAnnouncementOverlay({
-      eyebrow: 'UNO',
-      title: actorIsYou ? 'You say UNO!' : (actorName + ' says UNO!'),
+      eyebrow: 'Lumo',
+      title: actorIsYou ? 'You say Lumo!' : (actorName + ' says Lumo!'),
       message: overlayMessage,
-      tone: 'uno',
+      tone: 'lumo',
       duration: 2200,
       kind: 'uno'
     });
@@ -2345,6 +2670,11 @@ socket.on('turnPlayer', function (payload) {
 
   setPlayDirectionIndicator();
   renderPlayerSummary();
+  renderStackControls();
+});
+
+socket.on('giveCardPrompt', function (payload) {
+  openGiveCardPicker(payload && payload.toPlayerName);
 });
 
 socket.on('discardCardInfo', function (payload) {
@@ -2430,10 +2760,10 @@ socket.on('actionNotice', function (message) {
     return;
   }
 
-  const isUno = /says UNO/i.test(message);
+  const isUno = /says Lumo/i.test(message);
   if (isUno) {
     const actorIsYou = message.indexOf('You') === 0;
-    const actorName = message.replace(/\s+says UNO/i, '').trim();
+    const actorName = message.replace(/\s+says Lumo/i, '').trim();
     const unoSpeech = window.CardTableUnoSpeech && typeof window.CardTableUnoSpeech.buildUnoSpeechText === 'function'
       ? window.CardTableUnoSpeech.buildUnoSpeechText(actorIsYou, actorName)
       : message;

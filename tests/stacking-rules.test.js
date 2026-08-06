@@ -179,7 +179,7 @@ test('table settings default stacking rules are off unless enabled', async () =>
   }
 });
 
-test('draw two stacking accumulates and auto-draws when the next player cannot continue', async () => {
+test('draw two stacking accumulates and only resolves once the affected player explicitly declines', async () => {
   const port = 3111;
   const child = spawn(process.execPath, ['server.js'], {
     cwd: path.join(__dirname, '..'),
@@ -271,22 +271,58 @@ test('draw two stacking accumulates and auto-draws when the next player cannot c
       return payload && payload.id === guestOne.socket.id && payload.stackState && payload.stackState.active && payload.stackState.canContinue;
     }, 5000);
 
+    host.socket.emit('playCard', { card: 12 });
+
+    const guestOneTurn = await guestOneTurnPromise;
+    assert.equal(guestOneTurn.stackState.penalty, 2);
+
+    // guestTwo's hand ([1, 2]) has no Draw Two, so once the stack reaches them the
+    // server must present the normal turn interface rather than silently resolving
+    // the penalty itself - doing that automatically would reveal (via the resulting
+    // transition) that guestTwo lacked a Draw Two.
+    const guestTwoTurnPromise = waitForEvent(guestTwo.socket, 'turnPlayer', function (payload) {
+      return payload && payload.id === guestTwo.socket.id && payload.stackState && payload.stackState.active;
+    }, 5000);
+    // Neither spectator should be told whether guestTwo can continue the stack.
+    const hostSpectatorTurnPromise = waitForEvent(host.socket, 'turnPlayer', function (payload) {
+      return payload && payload.id === guestTwo.socket.id && payload.stackState && payload.stackState.active;
+    }, 5000);
+
+    guestOne.socket.emit('playCard', { card: 26 });
+
+    const guestTwoTurn = await guestTwoTurnPromise;
+    assert.equal(guestTwoTurn.stackState.penalty, 4);
+    assert.equal(guestTwoTurn.stackState.canContinue, false);
+
+    const hostSpectatorTurn = await hostSpectatorTurnPromise;
+    assert.equal(hostSpectatorTurn.stackState.canContinue, false);
+
+    // Give the server a moment to prove it does NOT auto-resolve on its own.
+    await new Promise((resolve) => setTimeout(resolve, 300));
+
+    const stillPendingState = await new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error('Timed out checking pending stack state')), 5000);
+      host.socket.once('tableState', (payload) => {
+        clearTimeout(timeout);
+        resolve(payload.table);
+      });
+      // No-op refresh - forces a tableState emit so the test can inspect card
+      // counts without changing any server state.
+      host.socket.emit('__testSetTableState', { tableId: createdTable.id });
+    });
+    const guestTwoStillTwo = stillPendingState.players.find((player) => player.id === guestTwo.socket.id);
+    assert.equal(guestTwoStillTwo.cardCount, 2, 'guestTwo should not have been auto-drawn yet');
+
+    const hostTurnPromise = waitForEvent(host.socket, 'turnPlayer', function (payload) {
+      return payload && payload.id === host.socket.id && (!payload.stackState || !payload.stackState.active);
+    }, 5000);
     const guestTwoResolvedStatePromise = waitForEvent(guestTwo.socket, 'tableState', function (payload) {
       return payload && payload.table && payload.table.players && payload.table.players.some(function (player) {
         return player.id === guestTwo.socket.id && player.cardCount === 6;
       });
     }, 5000);
 
-    const hostTurnPromise = waitForEvent(host.socket, 'turnPlayer', function (payload) {
-      return payload && payload.id === host.socket.id && (!payload.stackState || !payload.stackState.active);
-    }, 5000);
-
-    host.socket.emit('playCard', { card: 12 });
-
-    const guestOneTurn = await guestOneTurnPromise;
-    assert.equal(guestOneTurn.stackState.penalty, 2);
-
-    guestOne.socket.emit('playCard', { card: 26 });
+    guestTwo.socket.emit('acceptStackPenalty');
 
     const guestTwoResolvedTurn = await hostTurnPromise;
     assert.equal(guestTwoResolvedTurn.id, host.socket.id);
@@ -398,13 +434,23 @@ test('a last-card draw two only wins after the stack stops away from the starter
       setTimeout(resolve, 250);
     });
 
-    const roundSummaryPromise = waitForEvent(host.socket, 'roundSummary', function (payload) {
-      return payload && payload.winner === host.payload.name;
+    const guestTwoTurnPromise = waitForEvent(guestTwo.socket, 'turnPlayer', function (payload) {
+      return payload && payload.id === guestTwo.socket.id && payload.stackState && payload.stackState.active;
     }, 5000);
 
     host.socket.emit('playCard', { card: 12 });
 
     guestOne.socket.emit('playCard', { card: 12 });
+
+    // guestTwo has no Draw Two, so with the auto-resolve bug fixed the round only
+    // ends once guestTwo explicitly declines to stack.
+    await guestTwoTurnPromise;
+
+    const roundSummaryPromise = waitForEvent(host.socket, 'roundSummary', function (payload) {
+      return payload && payload.winner === host.payload.name;
+    }, 5000);
+
+    guestTwo.socket.emit('acceptStackPenalty');
 
     const roundSummary = await roundSummaryPromise;
     assert.equal(roundSummary.winner, host.payload.name);
@@ -511,10 +557,6 @@ test('wild draw four stacking preserves the last chosen color after the stack re
       return payload && payload.id === guestOne.socket.id && payload.stackState && payload.stackState.active && payload.stackState.canContinue;
     }, 5000);
 
-    const hostTurnPromise = waitForEvent(host.socket, 'turnPlayer', function (payload) {
-      return payload && payload.id === host.socket.id && (!payload.stackState || !payload.stackState.active);
-    }, 5000);
-
     const discardInfoPromise = new Promise((resolve, reject) => {
       const timeout = setTimeout(() => reject(new Error('Timed out waiting for discard card info')), 5000);
       host.socket.once('discardCardInfo', (payload) => {
@@ -528,7 +570,23 @@ test('wild draw four stacking preserves the last chosen color after the stack re
     const guestOneTurn = await guestOneTurnPromise;
     assert.equal(guestOneTurn.stackState.penalty, 4);
 
+    // guestTwo has no Wild Draw Four, so the affected player (guestTwo) must be
+    // presented with the normal turn interface and explicitly decline - the server
+    // must not resolve this on its own by inspecting guestTwo's hand.
+    const guestTwoTurnPromise = waitForEvent(guestTwo.socket, 'turnPlayer', function (payload) {
+      return payload && payload.id === guestTwo.socket.id && payload.stackState && payload.stackState.active && payload.stackState.penalty === 8;
+    }, 5000);
+
     guestOne.socket.emit('playCard', { card: 83, chosenColor: 'blue' });
+
+    const guestTwoTurn = await guestTwoTurnPromise;
+    assert.equal(guestTwoTurn.stackState.canContinue, false);
+
+    const hostTurnPromise = waitForEvent(host.socket, 'turnPlayer', function (payload) {
+      return payload && payload.id === host.socket.id && (!payload.stackState || !payload.stackState.active);
+    }, 5000);
+
+    guestTwo.socket.emit('acceptStackPenalty');
 
     const hostTurn = await hostTurnPromise;
     assert.equal(hostTurn.id, host.socket.id);

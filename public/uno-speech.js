@@ -13,8 +13,8 @@
       : 'A player';
 
     return actorIsYou
-      ? 'UNO. You say UNO!'
-      : ('UNO. ' + cleanedName + ' says UNO!');
+      ? 'Lumo. You say Lumo!'
+      : ('Lumo. ' + cleanedName + ' says Lumo!');
   }
 
   function buildUnoAnnouncementMessage(message) {
@@ -23,12 +23,12 @@
     }
 
     const trimmed = message.trim();
-    if (/says UNO/i.test(trimmed)) {
-      return 'UNO. ' + trimmed.replace(/\.?$/, '.');
+    if (/says Lumo/i.test(trimmed)) {
+      return 'Lumo. ' + trimmed.replace(/\.?$/, '.');
     }
 
-    if (/\bUNO\b/i.test(trimmed)) {
-      return 'UNO. ' + trimmed.replace(/\.?$/, '.');
+    if (/\bLumo\b/i.test(trimmed)) {
+      return 'Lumo. ' + trimmed.replace(/\.?$/, '.');
     }
 
     return trimmed;

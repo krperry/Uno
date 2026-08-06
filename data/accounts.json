@@ -9,8 +9,8 @@
       "passwordHash": "b233b237a29cd0000696024345dc0b24676ea0eb2cfd870a2791b3b54c36b079e9e3a0c98da922539abc353064fef0c0045803061f137cd62deb2ed643fa3e93",
       "passwordSalt": "c7ac5c8fb97f6d758f5f6c4fbe922c68",
       "createdAt": "2026-08-02T01:32:19.806Z",
-      "rememberTokenHash": "9caf4163a5cf9444e894e7466b6129a98161fc87767b8a82c5791f7a97b90cbc",
-      "rememberTokenIssuedAt": "2026-08-02T01:32:19.806Z"
+      "rememberTokenHash": "a0ac0862af8bc2027f93d05a981eb7896ce1842069734a770ecea191d9b13980",
+      "rememberTokenIssuedAt": "2026-08-06T22:35:57.257Z"
     },
     {
       "id": "ea00b8b8014a1bd2d658148a212d26dc",
@@ -81,6 +81,18 @@
       "passwordHash": "5563ad20804093a8da6e62553c173c0fcd8dc677f77ca833137ebfed30e6160bb29e9289fe7610f71ab874bdcd01e1f387f536c5c2180156bcb3c0bf66542a5f",
       "passwordSalt": "099f96639eaeb620a7257944b4d305bc",
       "createdAt": "2026-08-04T19:43:29.499Z"
+    },
+    {
+      "id": "3481e1f0a253ce5acdb106fc27f5eeca",
+      "email": "ben@blinksoft.com",
+      "emailLower": "ben@blinksoft.com",
+      "displayName": "Ben",
+      "displayNameLower": "ben",
+      "passwordHash": "86fd0d45a06795642a3ffbc4a064a9a503f47cc23b0f9f1d59f72792f07e141365006553c2d1a43b58a4d14b0a3a3ab0e196abf19fbf90e91b5c4249ed5bff07",
+      "passwordSalt": "d197cfe916895360e7090cf010ad7606",
+      "createdAt": "2026-08-06T22:38:58.993Z",
+      "rememberTokenHash": "08afb5993998ed025dfdca026deb146090dd26f3370564c1adac481d80ebc1a3",
+      "rememberTokenIssuedAt": "2026-08-06T22:38:58.994Z"
     }
   ]
 }

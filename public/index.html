@@ -4,12 +4,12 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <link rel="stylesheet" href="style.css">
-    <link rel="icon" type="image/svg" href="images/uno.svg">
-    <title>Uno</title>
+    <link rel="icon" type="image/svg" href="images/lumo/cards/card_back.svg">
+    <title>Lumo</title>
   </head>
   <body>
     <main class="app-shell">
-      <h1>UNO Online</h1>
+      <h1>Lumo Online</h1>
 
       <section id="auth-view" class="panel" aria-labelledby="auth-title">
         <h2 id="auth-title">Login</h2>
@@ -29,13 +29,14 @@
           <button id="delete-account-btn" type="button">Delete Account</button>
           <button id="clear-saved-btn" type="button">Clear Saved Email</button>
         </div>
+        <div id="auth-status" class="table-status" role="status" aria-live="polite"></div>
       </section>
 
       <section id="game-picker-view" class="panel hidden" aria-labelledby="game-picker-title">
         <h2 id="game-picker-title">Choose a game</h2>
-        <p id="game-picker-summary">Pick a card game to continue. UNO is available now; the others are accessible previews for later work.</p>
+        <p id="game-picker-summary">Pick a card game to continue. Lumo is available now; the others are accessible previews for later work.</p>
         <div class="game-picker-grid" role="list" aria-label="Available games">
-          <button id="select-uno-btn" type="button" class="game-option">UNO</button>
+          <button id="select-uno-btn" type="button" class="game-option">Lumo</button>
           <button id="select-hearts-btn" type="button" class="game-option">Hearts</button>
           <button id="select-spades-btn" type="button" class="game-option">Spades</button>
           <button id="select-cribbage-btn" type="button" class="game-option">Cribbage</button>
@@ -47,7 +48,7 @@
         <p id="placeholder-message"></p>
         <div class="row">
           <button id="placeholder-back-btn" type="button">Back to game picker</button>
-          <button id="placeholder-uno-btn" type="button">Play UNO</button>
+          <button id="placeholder-uno-btn" type="button">Play Lumo</button>
         </div>
       </section>
 
@@ -61,6 +62,9 @@
 
       <section id="lobby-view" class="panel hidden" aria-labelledby="lobby-title">
         <h2 id="lobby-title">Tables</h2>
+        <div class="row">
+          <button id="open-rules-btn" type="button">Read Lumo Rules</button>
+        </div>
         <p id="lobby-summary">Waiting for tables...</p>
         <ul id="table-list" class="table-list" tabindex="0" aria-label="Available tables"></ul>
         <div class="row">
@@ -117,8 +121,8 @@
             height="600"
             tabindex="0"
             role="application"
-            aria-roledescription="UNO game board"
-            aria-label="UNO game board"
+            aria-roledescription="Lumo game board"
+            aria-label="Lumo game board"
             aria-describedby="game-help"
           ></canvas>
             <div id="stack-controls" class="stack-controls hidden" aria-live="polite">
@@ -157,6 +161,7 @@
           <li>Y / Shift+Y: select highest / lowest yellow card</li>
           <li>B / Shift+B: select highest / lowest blue card</li>
           <li>G / Shift+G: select highest / lowest green card</li>
+          <li>Playing a Give Plus One opens a dialog to choose the card you give away; use arrow keys to pick a card and Enter or Give Card to confirm</li>
           <li>?: open this help</li>
           <li>Escape: close this help</li>
         </ul>
@@ -199,6 +204,29 @@
         <div class="row">
           <button id="color-picker-confirm-btn" type="button">Confirm</button>
           <button id="color-picker-cancel-btn" type="button">Cancel</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="rules-overlay" class="overlay hidden" role="dialog" aria-modal="true" aria-labelledby="rules-title">
+      <div class="overlay-card rules-card">
+        <h2 id="rules-title" tabindex="-1">Lumo Rules</h2>
+        <div id="rules-content" class="rules-content" aria-live="polite"></div>
+        <div class="row">
+          <button id="close-rules-btn" type="button">Close Rules</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="give-card-overlay" class="overlay hidden" role="dialog" aria-modal="true" aria-labelledby="give-card-title">
+      <div class="overlay-card">
+        <h2 id="give-card-title">Choose a card to give</h2>
+        <p id="give-card-instructions"></p>
+        <fieldset id="give-card-fieldset">
+          <legend class="visually-hidden">Card to give</legend>
+        </fieldset>
+        <div class="row">
+          <button id="give-card-confirm-btn" type="button">Give Card</button>
         </div>
       </div>
     </div>

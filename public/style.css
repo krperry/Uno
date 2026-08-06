@@ -148,6 +148,10 @@ button:disabled {
   color: #773617;
 }
 
+.table-status:empty {
+  display: none;
+}
+
 .play-direction {
   margin: 8px 0 10px;
   padding: 10px 12px;
@@ -205,12 +209,12 @@ button:disabled {
   border-left-color: #dd8a00;
 }
 
-.player-summary li.uno {
+.player-summary li.lumo {
   background: #ffe0dd;
   border-left-color: #d6453d;
 }
 
-.uno-badge {
+.lumo-badge {
   display: inline-block;
   margin-left: 6px;
   padding: 1px 8px;
@@ -272,7 +276,7 @@ canvas {
   box-shadow: 0 18px 44px rgba(0, 0, 0, 0.34);
 }
 
-.announcement-card.uno {
+.announcement-card.lumo {
   border-color: #d6453d;
   background: #fff5f4;
 }
@@ -364,6 +368,69 @@ canvas {
 .color-option-blue {
   background: #dbe6ff;
   color: #1c3b8f;
+}
+
+.rules-card {
+  width: min(640px, 100%);
+  max-height: min(80vh, 720px);
+  display: flex;
+  flex-direction: column;
+}
+
+.rules-content {
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.rules-content h3,
+.rules-content h4,
+.rules-content h5 {
+  margin: 16px 0 6px;
+  color: #123b39;
+}
+
+.rules-content p {
+  margin: 6px 0;
+  line-height: 1.5;
+}
+
+.rules-content ul {
+  margin: 6px 0 12px;
+  padding-left: 22px;
+}
+
+#give-card-fieldset {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border: none;
+  padding: 0;
+  margin: 14px 0;
+  max-height: 40vh;
+  overflow-y: auto;
+}
+
+.give-card-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: #eef5cb;
+  border: 2px solid transparent;
+  cursor: pointer;
+}
+
+.give-card-option:has(input:focus-visible) {
+  border-color: #123b39;
+  box-shadow: 0 0 0 3px rgba(18, 59, 57, 0.25);
+}
+
+.give-card-option input {
+  width: 18px;
+  height: 18px;
+  margin: 0;
 }
 
 .game-picker-grid {
