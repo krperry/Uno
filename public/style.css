@@ -182,6 +182,24 @@ button:disabled {
   display: none;
 }
 
+.stack-controls {
+  margin: 10px 0;
+  padding: 12px 14px;
+  border-radius: 8px;
+  background: #eef5cb;
+  border: 1px solid #c9d58c;
+  color: #34410f;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.stack-controls p {
+  margin: 0;
+  font-weight: 600;
+}
+
 .player-summary li.current-turn {
   background: #fff4cc;
   border-left-color: #dd8a00;

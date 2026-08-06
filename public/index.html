@@ -79,6 +79,18 @@
             <input id="new-table-max-rounds" type="number" min="1" max="1000" step="1" value="30">
           </label>
         </div>
+          <div class="checkbox-row">
+            <label class="inline-label" for="allow-draw-two-stacking">
+              <input id="allow-draw-two-stacking" type="checkbox">
+              Allow Draw Two Stacking
+            </label>
+          </div>
+          <div class="checkbox-row">
+            <label class="inline-label" for="allow-wild-draw-four-stacking">
+              <input id="allow-wild-draw-four-stacking" type="checkbox">
+              Allow Wild Draw Four Stacking
+            </label>
+          </div>
         <div class="row">
           <button id="create-table-btn" type="button">Create Table</button>
         </div>
@@ -109,6 +121,10 @@
             aria-label="UNO game board"
             aria-describedby="game-help"
           ></canvas>
+            <div id="stack-controls" class="stack-controls hidden" aria-live="polite">
+              <p id="stack-status"></p>
+              <button id="accept-stack-btn" type="button">Take penalty</button>
+            </div>
           <p id="game-help" class="visually-hidden">
             Use mouse or touch to play cards and draw from the pile. Press question mark on the game board to open the keyboard commands dialog.
           </p>

@@ -155,7 +155,20 @@ function clampInteger(value, min, max, fallback) {
 function normalizeMatchSettings(payload) {
   return {
     winningScore: clampInteger(payload && payload.winningScore, MIN_WINNING_SCORE, MAX_WINNING_SCORE, MATCH_POINTS_TO_WIN),
-    maxRounds: clampInteger(payload && payload.maxRounds, MIN_MAX_ROUNDS, MAX_MAX_ROUNDS, DEFAULT_MAX_ROUNDS)
+    maxRounds: clampInteger(payload && payload.maxRounds, MIN_MAX_ROUNDS, MAX_MAX_ROUNDS, DEFAULT_MAX_ROUNDS),
+    allowDrawTwoStacking: !!(payload && payload.allowDrawTwoStacking),
+    allowWildDrawFourStacking: !!(payload && payload.allowWildDrawFourStacking)
+  };
+}
+
+function getMatchSettings(table) {
+  const matchSettings = table && table.matchSettings ? table.matchSettings : {};
+
+  return {
+    winningScore: clampInteger(matchSettings.winningScore, MIN_WINNING_SCORE, MAX_WINNING_SCORE, MATCH_POINTS_TO_WIN),
+    maxRounds: clampInteger(matchSettings.maxRounds, MIN_MAX_ROUNDS, MAX_MAX_ROUNDS, DEFAULT_MAX_ROUNDS),
+    allowDrawTwoStacking: !!matchSettings.allowDrawTwoStacking,
+    allowWildDrawFourStacking: !!matchSettings.allowWildDrawFourStacking
   };
 }
 
@@ -479,6 +492,191 @@ function getTurnDirectionLabel(reverseFlag) {
   return reverseFlag ? 'counterclockwise' : 'clockwise';
 }
 
+function createInactiveStackState() {
+  return {
+    active: false,
+    type: null,
+    penalty: 0,
+    activeColor: null,
+    starterId: null,
+    starterName: '',
+    roundEndPending: false,
+    lastPlayerId: null,
+    lastPlayerName: '',
+    respondingPlayerId: null,
+    respondingPlayerName: ''
+  };
+}
+
+function getStackTypeLabel(stackType) {
+  return stackType === 'Draw4' ? 'Wild Draw Four' : 'Draw Two';
+}
+
+function getStackPenaltyAmount(stackType) {
+  return stackType === 'Draw4' ? 4 : 2;
+}
+
+function isLegalWildDrawFourPlay(table, hand, card) {
+  if (cardType(card) !== 'Draw4' || !Array.isArray(hand)) {
+    return false;
+  }
+
+  const boardColor = getCurrentBoardColor(table);
+  return !hand.some(function (handCard) {
+    return handCard !== card && cardColor(handCard) !== 'black' && cardColor(handCard) === boardColor;
+  });
+}
+
+function hasLegalStackCard(table, hand, stackType) {
+  if (!Array.isArray(hand)) {
+    return false;
+  }
+
+  if (stackType === 'Draw2') {
+    return hand.some(function (card) {
+      return cardType(card) === 'Draw2';
+    });
+  }
+
+  if (stackType === 'Draw4') {
+    return hand.some(function (card) {
+      return cardType(card) === 'Draw4';
+    });
+  }
+
+  return false;
+}
+
+function buildStackStatePayload(table, viewerId) {
+  if (!table || !table.game || !table.game.stack) {
+    return createInactiveStackState();
+  }
+
+  const stack = table.game.stack;
+  const currentPlayer = table.players[table.game.turn] || null;
+  const viewerIsCurrentPlayer = !!(currentPlayer && currentPlayer.id === viewerId);
+  const canContinue = !!(stack.active && viewerIsCurrentPlayer && hasLegalStackCard(table, currentPlayer.hand, stack.type));
+
+  return {
+    active: !!stack.active,
+    type: stack.type,
+    penalty: stack.penalty || 0,
+    activeColor: stack.activeColor || null,
+    lastPlayerId: stack.lastPlayerId || null,
+    lastPlayerName: stack.lastPlayerName || '',
+    respondingPlayerId: currentPlayer ? currentPlayer.id : null,
+    respondingPlayerName: currentPlayer ? currentPlayer.name : '',
+    canContinue: canContinue,
+    canAcceptPenalty: !!viewerIsCurrentPlayer,
+    promptText: canContinue
+      ? ('You may play a ' + getStackTypeLabel(stack.type) + ' or draw ' + (stack.penalty || 0) + ' cards.')
+      : ('You must draw ' + (stack.penalty || 0) + ' cards.')
+  };
+}
+
+function clearActiveStack(table) {
+  if (!table || !table.game) {
+    return;
+  }
+
+  table.game.stack = createInactiveStackState();
+}
+
+function activateStack(table, currentPlayer, card, chosenColor) {
+  if (!table || !table.game || !currentPlayer) {
+    return;
+  }
+
+  const stackType = cardType(card);
+  const nextPlayerIndex = getNextPlayerIndex(table, getPlayerIndex(table, currentPlayer.id), 1);
+  const nextPlayer = table.players[nextPlayerIndex] || null;
+
+  table.game.stack = {
+    active: true,
+    type: stackType,
+    penalty: getStackPenaltyAmount(stackType),
+    activeColor: stackType === 'Draw4' ? chosenColor : getCurrentBoardColor(table),
+    starterId: currentPlayer.id,
+    starterName: currentPlayer.name,
+    roundEndPending: currentPlayer.hand.length === 0,
+    lastPlayerId: currentPlayer.id,
+    lastPlayerName: currentPlayer.name,
+    respondingPlayerId: nextPlayer ? nextPlayer.id : null,
+    respondingPlayerName: nextPlayer ? nextPlayer.name : ''
+  };
+}
+
+function resolveStackPenalty(table, options) {
+  if (!table || !table.game || !table.game.stack || !table.game.stack.active) {
+    return false;
+  }
+
+  const playerIndex = table.game.turn;
+  const player = table.players[playerIndex];
+  if (!player) {
+    clearActiveStack(table);
+    return false;
+  }
+
+  const stack = table.game.stack;
+  const automatic = !!(options && options.automatic);
+  const stackLabel = getStackTypeLabel(stack.type);
+  const activeColorText = stack.type === 'Draw4' && stack.activeColor ? (' ' + capitalizeWord(stack.activeColor) + ' remains the active color.') : '';
+  const nextIndex = getNextPlayerIndex(table, playerIndex, 1);
+  const nextPlayer = table.players[nextIndex] || null;
+  const starterIndex = getPlayerIndex(table, stack.starterId);
+  const starterPlayer = starterIndex >= 0 ? table.players[starterIndex] : null;
+  const roundEndPending = !!stack.roundEndPending;
+
+  drawCardsFromDeck(table, playerIndex, stack.penalty);
+  io.to(player.id).emit('haveCard', player.hand);
+
+  const transitionMessage = automatic
+    ? (player.name + ' cannot continue the stack. ' + player.name + ' draws ' + stack.penalty + ' cards and loses their turn.' + activeColorText)
+    : (player.name + ' accepts the accumulated penalty. ' + player.name + ' draws ' + stack.penalty + ' cards and loses their turn.' + activeColorText);
+
+  if (roundEndPending && player.id !== stack.starterId && starterIndex >= 0) {
+    clearActiveStack(table);
+    io.to(table.id).emit('turnTransition', {
+      action: 'stack_resolve',
+      actorId: player.id,
+      actorName: player.name,
+      stackType: stack.type,
+      stackPenalty: stack.penalty,
+      stackLabel: stackLabel,
+      stackActiveColor: stack.activeColor || null,
+      automatic: automatic,
+      nextPlayerId: starterPlayer ? starterPlayer.id : null,
+      nextPlayerName: starterPlayer ? starterPlayer.name : '',
+      message: transitionMessage + (starterPlayer ? ' ' + starterPlayer.name + ' wins the round.' : '')
+    });
+
+    endRound(table, starterIndex, 'stack_resolved');
+    return true;
+  }
+
+  clearActiveStack(table);
+  advanceTurn(table, 1);
+  emitTableState(table);
+
+  io.to(table.id).emit('turnTransition', {
+    action: 'stack_resolve',
+    actorId: player.id,
+    actorName: player.name,
+    stackType: stack.type,
+    stackPenalty: stack.penalty,
+    stackLabel: stackLabel,
+    stackActiveColor: stack.activeColor || null,
+    automatic: automatic,
+    nextPlayerId: nextPlayer ? nextPlayer.id : null,
+    nextPlayerName: nextPlayer ? nextPlayer.name : '',
+    message: transitionMessage + (nextPlayer ? ' It is ' + nextPlayer.name + "'s turn." : '')
+  });
+
+  emitTurnPlayer(table);
+  return true;
+}
+
 function cardScore(card) {
   if (typeof card !== 'number') {
     return 0;
@@ -551,7 +749,8 @@ function initializeGameState(table) {
     locked: false,
     roundNumber: 1,
     startingPlayerIndex: 0,
-    lastRoundPoints: {}
+    lastRoundPoints: {},
+    stack: createInactiveStackState()
   };
 
   shuffle(table.game.deck);
@@ -603,6 +802,7 @@ function beginRound(table, options) {
   table.game.hasDrawn = false;
   table.game.locked = false;
   table.game.lastRoundPoints = {};
+  table.game.stack = createInactiveStackState();
 
   table.players.forEach(function (player) {
     player.hand = [];
@@ -705,6 +905,7 @@ function sendLobbySnapshot(socket) {
 
 function buildTableState(table, socketId) {
   const gameDefinition = getGameDefinition(table.gameType);
+  const matchSettings = getMatchSettings(table);
   return {
     table: {
       id: table.id,
@@ -715,7 +916,8 @@ function buildTableState(table, socketId) {
       hostName: table.hostName,
       status: table.status,
       roundNumber: table.status === 'in_game' && table.game ? (table.game.roundNumber || 1) : null,
-      matchSettings: table.matchSettings || { winningScore: MATCH_POINTS_TO_WIN, maxRounds: DEFAULT_MAX_ROUNDS },
+      matchSettings: matchSettings,
+      stackState: buildStackStatePayload(table, socketId),
       players: table.players.map(function (player) {
         return {
           id: player.id,
@@ -771,13 +973,19 @@ function emitTurnPlayer(table) {
     return;
   }
 
+  if (table.game && table.game.stack && table.game.stack.active && !hasLegalStackCard(table, currentPlayer.hand, table.game.stack.type)) {
+    resolveStackPenalty(table, { automatic: true });
+    return;
+  }
+
   const canPlay = hasPlayableCard(table, currentPlayer.hand);
   const payload = {
     id: currentPlayer.id,
     name: currentPlayer.name,
     canPlay: canPlay,
     mustDraw: !canPlay,
-    topDiscard: describeCard(table.game.cardOnBoard, table.game.chosenColor)
+    topDiscard: describeCard(table.game.cardOnBoard, table.game.chosenColor),
+    stackState: buildStackStatePayload(table, currentPlayer.id)
   };
 
   io.to(table.id).emit('turnPlayer', payload);
@@ -801,7 +1009,14 @@ function emitTurnTransition(table, transition) {
       skippedPlayerName: transition.skippedPlayerName || '',
       direction: transition.direction || null,
       nextPlayerId: transition.nextPlayerId || null,
-      nextPlayerName: transition.nextPlayerName || ''
+      nextPlayerName: transition.nextPlayerName || '',
+      message: transition.message || '',
+      stackActive: !!transition.stackActive,
+      stackType: transition.stackType || null,
+      stackPenalty: transition.stackPenalty || 0,
+      stackActiveColor: transition.stackActiveColor || null,
+      stackMessage: transition.stackMessage || '',
+      automatic: !!transition.automatic
     };
 
     if (transition.draw) {
@@ -887,6 +1102,8 @@ function endRound(table, winnerIndex, reason) {
   if (!table.players[winnerIndex]) {
     return;
   }
+
+  clearActiveStack(table);
 
   const matchSettings = table.matchSettings || { winningScore: MATCH_POINTS_TO_WIN, maxRounds: DEFAULT_MAX_ROUNDS };
   const winnerName = table.players[winnerIndex].name;
@@ -1057,6 +1274,88 @@ function validatePlayerReady(socket) {
 function onConnection(socket) {
   clearSocketAuth(socket);
   socket.tableId = null;
+
+  if (process.env.NODE_ENV === 'test') {
+    socket.on('__testSetTableState', function (payload) {
+      const tableId = payload && payload.tableId;
+      const table = tableId ? tables[tableId] : null;
+      if (!table) {
+        socket.emit('serverMessage', { type: 'error', message: 'Test table not found' });
+        return;
+      }
+
+      if (!table.game) {
+        initializeGameState(table);
+      }
+
+      if (payload.matchSettings) {
+        table.matchSettings = normalizeMatchSettings({
+          ...getMatchSettings(table),
+          ...payload.matchSettings
+        });
+      }
+
+      if (typeof payload.status === 'string') {
+        table.status = payload.status;
+      }
+
+      if (payload.game) {
+        if (typeof payload.game.turn === 'number') {
+          table.game.turn = payload.game.turn;
+        }
+        if (typeof payload.game.reverse === 'number') {
+          table.game.reverse = payload.game.reverse;
+        }
+        if (typeof payload.game.cardOnBoard === 'number') {
+          table.game.cardOnBoard = payload.game.cardOnBoard;
+        }
+        if (typeof payload.game.chosenColor === 'string' || payload.game.chosenColor === null) {
+          table.game.chosenColor = payload.game.chosenColor;
+        }
+        if (Array.isArray(payload.game.deck)) {
+          table.game.deck = payload.game.deck.slice();
+        }
+        if (payload.game.stack) {
+          table.game.stack = Object.assign(createInactiveStackState(), payload.game.stack);
+        }
+        if (typeof payload.game.locked === 'boolean') {
+          table.game.locked = payload.game.locked;
+        }
+        if (typeof payload.game.hasDrawn === 'boolean') {
+          table.game.hasDrawn = payload.game.hasDrawn;
+        }
+      }
+
+      if (Array.isArray(payload.players)) {
+        payload.players.forEach(function (entry) {
+          const player = table.players.find(function (tablePlayer) {
+            return tablePlayer.id === entry.id;
+          });
+
+          if (!player) {
+            return;
+          }
+
+          if (Array.isArray(entry.hand)) {
+            player.hand = entry.hand.slice();
+          }
+          if (typeof entry.name === 'string') {
+            player.name = entry.name;
+          }
+        });
+      }
+
+      emitTableState(table);
+
+      if (payload.emitDiscardCard) {
+        emitDiscardCard(table);
+      }
+
+      if (payload.emitTurnPlayer) {
+        emitTurnPlayer(table);
+      }
+    });
+  }
 
   socket.on('resumeLogin', function (payload) {
     if (socket.accountId) {
@@ -1527,6 +1826,27 @@ function onConnection(socket) {
     emitTurnPlayer(table);
   });
 
+  socket.on('acceptStackPenalty', function () {
+    const table = findTableBySocket(socket);
+    if (!table || table.status !== 'in_game' || !table.game || table.game.locked) {
+      socket.emit('playResult', { success: false, message: 'Unable to accept the penalty right now' });
+      return;
+    }
+
+    const currentPlayer = table.players[table.game.turn];
+    if (!currentPlayer || currentPlayer.id !== socket.id) {
+      socket.emit('playResult', { success: false, message: 'It is not your turn' });
+      return;
+    }
+
+    if (!table.game.stack || !table.game.stack.active) {
+      socket.emit('playResult', { success: false, message: 'There is no active draw stack' });
+      return;
+    }
+
+    resolveStackPenalty(table, { automatic: false });
+  });
+
   socket.on('playCard', function (payload) {
     const table = findTableBySocket(socket);
     if (!table || table.status !== 'in_game' || !table.game || table.game.locked) {
@@ -1555,7 +1875,32 @@ function onConnection(socket) {
       return;
     }
 
-    if (cardType(card) === 'Draw4') {
+    const type = cardType(card);
+    const drawTwoStackingEnabled = !!table.matchSettings.allowDrawTwoStacking;
+    const drawFourStackingEnabled = !!table.matchSettings.allowWildDrawFourStacking;
+    const activeStack = table.game.stack && table.game.stack.active ? table.game.stack : null;
+    const canContinueStack = !!(activeStack
+      && ((activeStack.type === 'Draw2' && drawTwoStackingEnabled && type === 'Draw2')
+        || (activeStack.type === 'Draw4' && drawFourStackingEnabled && type === 'Draw4')));
+    const stackWillBeActive = !!(activeStack ? canContinueStack : ((type === 'Draw2' && drawTwoStackingEnabled) || (type === 'Draw4' && drawFourStackingEnabled)));
+
+    if (activeStack) {
+      if (!canContinueStack) {
+        socket.emit('playResult', {
+          success: false,
+          message: 'Only another ' + getStackTypeLabel(activeStack.type) + ' can continue the current stack'
+        });
+        return;
+      }
+    } else if (!canPlayCardOnBoard(table, card)) {
+      socket.emit('playResult', {
+        success: false,
+        message: 'Cannot play ' + describeCard(card) + ' on ' + describeCard(table.game.cardOnBoard, table.game.chosenColor)
+      });
+      return;
+    }
+
+    if (!activeStack && cardType(card) === 'Draw4') {
       const boardColor = getCurrentBoardColor(table);
       const hasColorMatch = currentPlayer.hand.some(function (handCard) {
         return handCard !== card && cardColor(handCard) !== 'black' && cardColor(handCard) === boardColor;
@@ -1570,14 +1915,6 @@ function onConnection(socket) {
       }
     }
 
-    if (!canPlayCardOnBoard(table, card)) {
-      socket.emit('playResult', {
-        success: false,
-        message: 'Cannot play ' + describeCard(card) + ' on ' + describeCard(table.game.cardOnBoard, table.game.chosenColor)
-      });
-      return;
-    }
-
     table.game.cardOnBoard = card;
     table.game.chosenColor = isWild ? chosenColor : null;
     table.game.hasDrawn = false;
@@ -1588,16 +1925,20 @@ function onConnection(socket) {
     emitDiscardCard(table);
     io.to(currentPlayer.id).emit('haveCard', currentPlayer.hand);
 
-    const type = cardType(card);
     const cardDescription = describeCard(card, table.game.chosenColor);
+    const nextIndexAfterPlay = getNextPlayerIndex(table, currentPlayerIndex, 1);
+    const nextPlayerAfterPlay = table.players[nextIndexAfterPlay] || null;
+    const willStartStack = !activeStack && ((type === 'Draw2' && drawTwoStackingEnabled) || (type === 'Draw4' && drawFourStackingEnabled));
+    const willContinueStack = !!activeStack && canContinueStack;
 
     if (currentPlayer.hand.length === 1) {
       io.to(table.id).emit('actionNotice', currentPlayer.name + ' says UNO');
     }
 
-    if (currentPlayer.hand.length === 0) {
+    if (currentPlayer.hand.length === 0 && !stackWillBeActive) {
       socket.emit('playResult', { success: true, card: card, message: 'You play a ' + cardDescription + '.' });
       socket.to(table.id).emit('cardPlayed', { description: cardDescription });
+      clearActiveStack(table);
       endRound(table, currentPlayerIndex, 'all_cards_played');
       return;
     }
@@ -1606,10 +1947,31 @@ function onConnection(socket) {
     let drawEffect = null;
     let skippedPlayer = null;
     let directionLabel = null;
+    let stackMessage = '';
 
-    if (type === 'Draw2' || type === 'Draw4') {
+    if (willStartStack || willContinueStack) {
+      if (!activeStack) {
+        activateStack(table, currentPlayer, card, chosenColor);
+      } else {
+        table.game.stack.penalty = (table.game.stack.penalty || 0) + getStackPenaltyAmount(type);
+        table.game.stack.activeColor = type === 'Draw4' ? chosenColor : getCurrentBoardColor(table);
+        table.game.stack.respondingPlayerId = nextPlayerAfterPlay ? nextPlayerAfterPlay.id : null;
+        table.game.stack.respondingPlayerName = nextPlayerAfterPlay ? nextPlayerAfterPlay.name : '';
+      }
+
+      table.game.stack.roundEndPending = !!(table.game.stack && table.game.stack.roundEndPending);
+      turnSteps = 1;
+
+      stackMessage = activeStack
+        ? (currentPlayer.name + ' stacks ' + getStackTypeLabel(type) + '. Draw penalty is now ' + table.game.stack.penalty + '.')
+        : (currentPlayer.name + ' plays ' + getStackTypeLabel(type) + '. Draw penalty is now ' + table.game.stack.penalty + '.');
+
+      if (type === 'Draw4') {
+        stackMessage += ' ' + capitalizeWord(chosenColor) + ' is the active color.';
+      }
+    } else if (type === 'Draw2' || type === 'Draw4') {
       const drawCount = type === 'Draw2' ? 2 : 4;
-      const targetIndex = getNextPlayerIndex(table, currentPlayerIndex, 1);
+      const targetIndex = nextIndexAfterPlay;
       const targetPlayer = table.players[targetIndex];
       drawCardsFromDeck(table, targetIndex, drawCount);
       const drawnCards = targetPlayer.hand.slice(-drawCount);
@@ -1664,6 +2026,14 @@ function onConnection(socket) {
       nextPlayerId: nextPlayer ? nextPlayer.id : null,
       nextPlayerName: nextPlayer ? nextPlayer.name : ''
     };
+
+    if (stackMessage) {
+      transition.stackActive = true;
+      transition.stackType = type;
+      transition.stackPenalty = table.game.stack.penalty;
+      transition.stackActiveColor = table.game.stack.activeColor;
+      transition.stackMessage = stackMessage;
+    }
 
     if (drawEffect) {
       transition.draw = drawEffect;
