@@ -1860,8 +1860,9 @@ function getDiscardBottomY() {
 }
 
 function getHandTopY() {
-  // Keep a small, constant gap below the discard/deck row.
-  return getDiscardBottomY() + 10;
+  // Gap must exceed drawHand's above-hand clear buffer (16px) so redrawing the
+  // hand never erases part of the discard/deck row above it.
+  return getDiscardBottomY() + 20;
 }
 
 function getHandBottomY() {
