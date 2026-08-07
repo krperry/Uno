@@ -399,40 +399,6 @@ canvas {
   padding-left: 22px;
 }
 
-#give-card-fieldset {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  border: none;
-  padding: 0;
-  margin: 14px 0;
-  max-height: 40vh;
-  overflow-y: auto;
-}
-
-.give-card-option {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-weight: 600;
-  padding: 8px 12px;
-  border-radius: 8px;
-  background: #eef5cb;
-  border: 2px solid transparent;
-  cursor: pointer;
-}
-
-.give-card-option:has(input:focus-visible) {
-  border-color: #123b39;
-  box-shadow: 0 0 0 3px rgba(18, 59, 57, 0.25);
-}
-
-.give-card-option input {
-  width: 18px;
-  height: 18px;
-  margin: 0;
-}
-
 .game-picker-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));

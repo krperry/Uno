@@ -791,7 +791,7 @@ function cardScore(card) {
   }
 
   if (isGivePlusOneCard(card)) {
-    return 10;
+    return 20;
   }
 
   if (cardColor(card) === 'black') {
@@ -2123,9 +2123,9 @@ function onConnection(socket) {
       socket.emit('playResult', {
         success: true,
         card: card,
-        message: 'You play a ' + giveColor + ' Give Plus One. Choose a card to give to ' + nextPlayerAfterPlay.name + '.'
+        message: 'You play a ' + giveColor + ' Give Plus One.'
       });
-      socket.emit('giveCardPrompt', { toPlayerName: nextPlayerAfterPlay.name });
+      socket.emit('giveCardPrompt', { toPlayerName: nextPlayerAfterPlay.name, color: giveColor });
       socket.to(table.id).emit('actionNotice', currentPlayer.name + ' plays a ' + giveColor + ' Give Plus One.');
       emitTableState(table);
       return;
@@ -2282,11 +2282,11 @@ function onConnection(socket) {
     table.players.forEach(function (player) {
       let message;
       if (player.id === giver.id) {
-        message = 'You give ' + cardDescription + ' to ' + receiver.name + ". It is " + receiver.name + "'s turn.";
+        message = 'You pass ' + cardDescription + '. It is ' + receiver.name + "'s turn.";
       } else if (player.id === receiver.id) {
-        message = 'You receive ' + cardDescription + ' from ' + giver.name + '. It is your turn.';
+        message = giver.name + ' passes ' + cardDescription + ' to you. It is your turn.';
       } else {
-        message = giver.name + ' plays a ' + pending.color + ' Give Plus One and gives one card to ' + receiver.name + ". It is " + receiver.name + "'s turn.";
+        message = giver.name + ' passes ' + cardDescription + ' to ' + receiver.name + ". It is " + receiver.name + "'s turn.";
       }
 
       io.to(player.id).emit('turnTransition', {

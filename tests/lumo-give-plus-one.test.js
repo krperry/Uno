@@ -231,10 +231,9 @@ test('a Give Plus One card can be legally played and transfers the chosen card t
       giverMessagePromise, receiverMessagePromise, bystanderMessagePromise, receiverHandPromise, nextTurnPromise
     ]);
 
-    assert.match(giverMessage.message, /You give .*5 red.* to/i);
-    assert.match(receiverMessage.message, /You receive .*5 red.* from/i);
-    assert.match(bystanderMessage.message, /plays a red Give Plus One and gives one card to/i);
-    assert.doesNotMatch(bystanderMessage.message, /\b5 red\b/i); // spectators never learn which card
+    assert.match(giverMessage.message, /You pass .*5 red/i);
+    assert.match(receiverMessage.message, /passes .*5 red.* to you/i);
+    assert.match(bystanderMessage.message, /passes .*5 red.* to/i);
     assert.ok(receiverHand.indexOf(5) !== -1);
     assert.equal(nextTurn.id, guestOne.socket.id);
   } finally {

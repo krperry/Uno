@@ -114,7 +114,6 @@ const appState = {
   announcementKind: null,
   pendingWildCard: null,
   colorPickerReturnFocusEl: null,
-  givePickerOpen: false,
   rulesOpen: false,
   rulesReturnFocusEl: null,
   pendingRoundDealAnnouncement: false,
@@ -184,10 +183,6 @@ const el = {
   colorPickerFieldset: document.getElementById('color-picker-fieldset'),
   colorPickerConfirmBtn: document.getElementById('color-picker-confirm-btn'),
   colorPickerCancelBtn: document.getElementById('color-picker-cancel-btn'),
-  giveCardOverlay: document.getElementById('give-card-overlay'),
-  giveCardInstructions: document.getElementById('give-card-instructions'),
-  giveCardFieldset: document.getElementById('give-card-fieldset'),
-  giveCardConfirmBtn: document.getElementById('give-card-confirm-btn'),
   openRulesBtn: document.getElementById('open-rules-btn'),
   rulesOverlay: document.getElementById('rules-overlay'),
   rulesTitle: document.getElementById('rules-title'),
@@ -392,7 +387,7 @@ function focusBoardForA11y(options) {
     return;
   }
 
-  if (appState.helpOpen || appState.announcementOpen || appState.givePickerOpen || appState.rulesOpen
+  if (appState.helpOpen || appState.announcementOpen || appState.rulesOpen
     || (el.colorPickerOverlay && !el.colorPickerOverlay.classList.contains('hidden'))) {
     return;
   }
@@ -644,7 +639,6 @@ function bindUi() {
   });
   bindPress(el.colorPickerConfirmBtn, confirmColorPicker);
   bindPress(el.colorPickerCancelBtn, cancelColorPicker);
-  bindPress(el.giveCardConfirmBtn, confirmGiveCard);
   bindPress(el.acceptStackBtn, acceptStackPenalty);
   bindPress(el.openRulesBtn, openRulesOverlay);
   bindPress(el.closeRulesBtn, closeRulesOverlay);
@@ -660,13 +654,6 @@ function bindUi() {
       event.preventDefault();
     } else if (event.key === 'Escape') {
       cancelColorPicker();
-      event.preventDefault();
-    }
-  });
-
-  el.giveCardOverlay.addEventListener('keydown', function (event) {
-    if (event.key === 'Enter') {
-      confirmGiveCard();
       event.preventDefault();
     }
   });
@@ -924,7 +911,7 @@ function onMouseClick(event) {
     return;
   }
 
-  if (appState.helpOpen || appState.givePickerOpen || appState.rulesOpen) {
+  if (appState.helpOpen || appState.rulesOpen) {
     return;
   }
 
@@ -956,7 +943,7 @@ function onMouseClick(event) {
     for (let i = 0, pos = firstCard; i < hand.length; i++, pos += spacing) {
       if (x >= pos && x <= pos + spacing) {
         appState.handIndex = i;
-        emitPlayCard(hand[i]);
+        selectHandCard(hand[i]);
         return;
       }
     }
@@ -1035,7 +1022,7 @@ function handleGameKeys(event) {
     handled = true;
   } else if (key === 'enter' || key === ' ') {
     if (appState.hand.length) {
-      emitPlayCard(appState.hand[appState.handIndex]);
+      selectHandCard(appState.hand[appState.handIndex]);
     } else {
       message = 'No cards in hand';
     }
@@ -1166,7 +1153,7 @@ function getCardScoreValue(card) {
   }
 
   if (type === 'GivePlusOne') {
-    return 10;
+    return 20;
   }
 
   if (type === 'Skip' || type === 'Reverse' || type === 'Draw2') {
@@ -1343,68 +1330,30 @@ function cancelColorPicker() {
   srSpeak('Wild color selection canceled', 'assertive');
 }
 
-function populateGiveCardFieldset() {
-  el.giveCardFieldset.innerHTML = '';
-
-  appState.hand.forEach(function (card, index) {
-    const label = document.createElement('label');
-    label.className = 'give-card-option';
-
-    const input = document.createElement('input');
-    input.type = 'radio';
-    input.name = 'give-card-choice';
-    input.value = String(index);
-    if (index === 0) {
-      input.checked = true;
-    }
-
-    label.appendChild(input);
-    label.appendChild(document.createTextNode(' ' + describeCardForSpeech(card)));
-    el.giveCardFieldset.appendChild(label);
-  });
+function isAwaitingGiveSelection() {
+  const give = appState.currentTable && appState.currentTable.givePendingState;
+  return !!(give && give.active && give.isGiver);
 }
 
-function openGiveCardPicker(toPlayerName) {
-  const recipientName = toPlayerName || 'the next player';
-  appState.givePickerOpen = true;
-
-  if (el.giveCardInstructions) {
-    el.giveCardInstructions.textContent = 'Choose a card to give to ' + recipientName + '. This card is transferred to their hand; it does not end your turn until you choose.';
-  }
-
-  populateGiveCardFieldset();
-  el.giveCardOverlay.classList.remove('hidden');
-
-  const firstRadio = el.giveCardFieldset.querySelector('input[type="radio"]');
-  if (firstRadio) {
-    firstRadio.focus();
-  }
-
-  srSpeak('Choose a card to give to ' + recipientName + '.', 'assertive', { canInterruptLock: true });
-}
-
-function closeGiveCardPicker() {
-  appState.givePickerOpen = false;
-  el.giveCardOverlay.classList.add('hidden');
-}
-
-function confirmGiveCard() {
-  const selected = el.giveCardFieldset.querySelector('input[type="radio"]:checked');
-  if (!selected) {
-    srSpeak('Select a card to give first', 'assertive', { canInterruptLock: true });
-    return;
-  }
-
-  const index = parseInt(selected.value, 10);
-  const card = appState.hand[index];
-  closeGiveCardPicker();
-
+function selectHandCard(card) {
   if (typeof card !== 'number') {
     return;
   }
 
+  if (isAwaitingGiveSelection()) {
+    submitGiveCard(card);
+    return;
+  }
+
+  emitPlayCard(card);
+}
+
+function submitGiveCard(card) {
+  if (appState.gameStatus !== 'in_game' || !appState.turn) {
+    return;
+  }
+
   socket.emit('submitGiveCard', { card: card });
-  focusBoardForA11y({ announceOnFocus: false });
 }
 
 let lumoRulesHtmlCache = null;
@@ -2675,7 +2624,9 @@ socket.on('turnPlayer', function (payload) {
 });
 
 socket.on('giveCardPrompt', function (payload) {
-  openGiveCardPicker(payload && payload.toPlayerName);
+  const recipientName = (payload && payload.toPlayerName) || 'the next player';
+  const color = payload && payload.color ? payload.color + ' ' : '';
+  srSpeak('You play a ' + color + 'Give Plus One. Pick a card from your hand to pass to ' + recipientName + '.', 'assertive', { canInterruptLock: true });
 });
 
 socket.on('discardCardInfo', function (payload) {

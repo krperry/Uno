@@ -92,13 +92,13 @@ function getServerExports(port) {
   });
 }
 
-test('the Lumo deck includes two Give Plus One cards per color worth 10 points each', async () => {
+test('the Lumo deck includes two Give Plus One cards per color worth 20 points each', async () => {
   const summary = await getServerExports(3130);
 
   assert.equal(summary.total, 116, 'the deck must total 116 cards per public/lumo-rules.md');
   assert.equal(summary.giveCount, 8, 'two Give Plus One cards per color (4 colors)');
   assert.deepEqual(summary.giveColors, ['blue', 'blue', 'green', 'green', 'red', 'red', 'yellow', 'yellow']);
-  assert.equal(summary.giveScore, 10);
+  assert.equal(summary.giveScore, 20);
   assert.match(summary.giveDescription, /Give Plus One/i);
 });
 

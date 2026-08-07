@@ -161,7 +161,7 @@
           <li>Y / Shift+Y: select highest / lowest yellow card</li>
           <li>B / Shift+B: select highest / lowest blue card</li>
           <li>G / Shift+G: select highest / lowest green card</li>
-          <li>Playing a Give Plus One opens a dialog to choose the card you give away; use arrow keys to pick a card and Enter or Give Card to confirm</li>
+          <li>Playing a Give Plus One works like a normal play; your turn continues so you can select any card from your hand and press Enter to pass it to the next player</li>
           <li>?: open this help</li>
           <li>Escape: close this help</li>
         </ul>
@@ -214,19 +214,6 @@
         <div id="rules-content" class="rules-content" aria-live="polite"></div>
         <div class="row">
           <button id="close-rules-btn" type="button">Close Rules</button>
-        </div>
-      </div>
-    </div>
-
-    <div id="give-card-overlay" class="overlay hidden" role="dialog" aria-modal="true" aria-labelledby="give-card-title">
-      <div class="overlay-card">
-        <h2 id="give-card-title">Choose a card to give</h2>
-        <p id="give-card-instructions"></p>
-        <fieldset id="give-card-fieldset">
-          <legend class="visually-hidden">Card to give</legend>
-        </fieldset>
-        <div class="row">
-          <button id="give-card-confirm-btn" type="button">Give Card</button>
         </div>
       </div>
     </div>
