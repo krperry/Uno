@@ -241,12 +241,15 @@ button:disabled {
   display: flex;
   align-items: flex-start;
   gap: 14px;
+  margin-top: 10px;
+  padding: 10px;
+  border-radius: 10px;
+  background: #10ac84;
 }
 
 .play-history-panel {
   width: 280px;
   flex: 0 0 280px;
-  margin-top: 10px;
   padding: 10px;
   border-radius: 8px;
   background: #ecf6f4;
@@ -283,7 +286,7 @@ button:disabled {
 }
 
 canvas {
-  margin: 10px 0 0;
+  margin: 0;
   display: block;
   background-color: #10ac84;
   max-width: 100%;
@@ -300,7 +303,6 @@ canvas {
   .play-history-panel {
     width: 100%;
     flex: 1 1 auto;
-    margin-top: 0;
   }
 }
 
