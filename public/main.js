@@ -2619,6 +2619,7 @@ socket.on('tableState', function (payload) {
   const wasInGame = appState.gameStatus === 'in_game';
 
   if (!payload || !payload.table) {
+    const shouldReturnToLobby = appState.loggedIn;
     appState.currentTable = null;
     appState.gameStatus = 'waiting';
     appState.turn = false;
@@ -2633,6 +2634,10 @@ socket.on('tableState', function (payload) {
     appState.pendingRoundDealAnnouncement = false;
     clearPlayHistory();
     closeAnnouncementOverlay(false);
+    if (shouldReturnToLobby) {
+      setScreen('lobby');
+      socket.emit('requestLobbySnapshot');
+    }
     render();
     return;
   }
