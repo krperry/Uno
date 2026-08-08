@@ -1359,6 +1359,9 @@ function leaveCurrentTable(socket, reason) {
   socket.tableId = null;
 
   if (table.players.length === 0) {
+    if (reason !== 'disconnect') {
+      socket.emit('tableState', null);
+    }
     delete tables[table.id];
     emitLobbySnapshotAll();
     return;
