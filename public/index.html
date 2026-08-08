@@ -178,32 +178,20 @@
       </div>
     </div>
 
-    <div id="color-picker-overlay" class="overlay hidden" role="dialog" aria-modal="true" aria-labelledby="color-picker-title">
+    <div id="color-picker-overlay" class="overlay hidden" role="dialog" aria-modal="true" aria-labelledby="color-picker-title" aria-describedby="color-picker-description color-picker-selection">
       <div class="overlay-card">
         <h2 id="color-picker-title">Choose a color</h2>
-        <p>Pick the color for your Wild card, then press Enter or select Confirm.</p>
-        <fieldset id="color-picker-fieldset">
-          <legend class="visually-hidden">Wild card color</legend>
-          <label class="color-option color-option-red">
-            <input type="radio" name="wild-color" value="red" checked>
-            Red
-          </label>
-          <label class="color-option color-option-yellow">
-            <input type="radio" name="wild-color" value="yellow">
-            Yellow
-          </label>
-          <label class="color-option color-option-green">
-            <input type="radio" name="wild-color" value="green">
-            Green
-          </label>
-          <label class="color-option color-option-blue">
-            <input type="radio" name="wild-color" value="blue">
-            Blue
-          </label>
-        </fieldset>
+        <p id="color-picker-description">Pick the color for your Wild card, then press Enter or select Confirm. Use left and right arrows or R, Y, G, B while the board is focused.</p>
+        <div id="color-picker-options" class="color-picker-options" role="radiogroup" aria-label="Wild card color">
+          <button type="button" class="color-option color-option-red" role="radio" aria-checked="true" tabindex="-1" data-wild-color="red">Red</button>
+          <button type="button" class="color-option color-option-yellow" role="radio" aria-checked="false" tabindex="-1" data-wild-color="yellow">Yellow</button>
+          <button type="button" class="color-option color-option-green" role="radio" aria-checked="false" tabindex="-1" data-wild-color="green">Green</button>
+          <button type="button" class="color-option color-option-blue" role="radio" aria-checked="false" tabindex="-1" data-wild-color="blue">Blue</button>
+        </div>
+        <p id="color-picker-selection" class="hint">Selected color: Red</p>
         <div class="row">
-          <button id="color-picker-confirm-btn" type="button">Confirm</button>
-          <button id="color-picker-cancel-btn" type="button">Cancel</button>
+          <button id="color-picker-confirm-btn" type="button" tabindex="-1">Confirm</button>
+          <button id="color-picker-cancel-btn" type="button" tabindex="-1">Cancel</button>
         </div>
       </div>
     </div>

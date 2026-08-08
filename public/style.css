@@ -319,33 +319,32 @@ canvas {
   min-height: 32px;
 }
 
-#color-picker-fieldset {
+.color-picker-options {
   display: flex;
   gap: 14px;
   flex-wrap: wrap;
-  border: none;
-  padding: 0;
   margin: 14px 0;
 }
 
 .color-option {
-  display: flex;
-  align-items: center;
-  gap: 6px;
+  appearance: none;
   font-weight: 700;
   padding: 8px 12px;
   border-radius: 8px;
-  border: 2px solid transparent;
+  border: 2px solid rgba(0, 0, 0, 0.1);
   cursor: pointer;
+  min-width: 90px;
+  text-align: center;
+  transition: transform 120ms ease, box-shadow 120ms ease, border-color 120ms ease;
 }
 
-.color-option input {
-  width: 18px;
-  height: 18px;
-  margin: 0;
+.color-option[aria-checked="true"] {
+  border-color: #123b39;
+  box-shadow: 0 0 0 3px rgba(18, 59, 57, 0.25);
+  transform: translateY(-1px);
 }
 
-.color-option:has(input:focus-visible) {
+.color-option:focus-visible {
   border-color: #123b39;
   box-shadow: 0 0 0 3px rgba(18, 59, 57, 0.25);
 }

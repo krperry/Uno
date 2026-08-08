@@ -16,6 +16,8 @@ const GAME_CATALOG = {
   cribbage: { type: 'cribbage', name: 'Cribbage', playable: false, description: 'Cribbage is not implemented yet.' }
 };
 
+const WILD_PICKER_COLORS = ['red', 'yellow', 'green', 'blue'];
+
 // Lumo card artwork: one SVG file per card in public/images/lumo/cards (see
 // FILE_LIST.txt there). Images are loaded lazily and cached by filename since,
 // unlike the old UNO sprite sheet, each card is now its own file.
@@ -113,7 +115,7 @@ const appState = {
   announcementOpen: false,
   announcementKind: null,
   pendingWildCard: null,
-  colorPickerReturnFocusEl: null,
+  pendingWildColor: 'red',
   rulesOpen: false,
   rulesReturnFocusEl: null,
   pendingRoundDealAnnouncement: false,
@@ -180,7 +182,8 @@ const el = {
   announcementMessage: document.getElementById('announcement-message'),
   closeAnnouncementBtn: document.getElementById('close-announcement-btn'),
   colorPickerOverlay: document.getElementById('color-picker-overlay'),
-  colorPickerFieldset: document.getElementById('color-picker-fieldset'),
+  colorPickerOptions: document.getElementById('color-picker-options'),
+  colorPickerSelection: document.getElementById('color-picker-selection'),
   colorPickerConfirmBtn: document.getElementById('color-picker-confirm-btn'),
   colorPickerCancelBtn: document.getElementById('color-picker-cancel-btn'),
   openRulesBtn: document.getElementById('open-rules-btn'),
@@ -637,8 +640,27 @@ function bindUi() {
   bindPress(el.closeAnnouncementBtn, function () {
     closeAnnouncementOverlay();
   });
-  bindPress(el.colorPickerConfirmBtn, confirmColorPicker);
-  bindPress(el.colorPickerCancelBtn, cancelColorPicker);
+  el.announcementOverlay.addEventListener('click', function (event) {
+    // The overlay backdrop covers the full viewport (see .overlay in style.css),
+    // so a click meant for a control behind it (e.g. Leave Table) lands here
+    // instead and would otherwise be silently swallowed until the auto-dismiss
+    // timer fires. Treat a direct backdrop click as "dismiss" so it isn't a dead
+    // click - the user just has to click their intended control a second time.
+    if (event.target === el.announcementOverlay) {
+      closeAnnouncementOverlay();
+    }
+  });
+  bindPressNoFocus(el.colorPickerConfirmBtn, confirmColorPicker);
+  bindPressNoFocus(el.colorPickerCancelBtn, cancelColorPicker);
+  if (el.colorPickerOptions) {
+    const colorButtons = el.colorPickerOptions.querySelectorAll('[data-wild-color]');
+    colorButtons.forEach(function (button) {
+      bindPressNoFocus(button, function () {
+        const color = button.getAttribute('data-wild-color');
+        setPendingWildColor(color, { announce: true });
+      });
+    });
+  }
   bindPress(el.acceptStackBtn, acceptStackPenalty);
   bindPress(el.openRulesBtn, openRulesOverlay);
   bindPress(el.closeRulesBtn, closeRulesOverlay);
@@ -649,11 +671,8 @@ function bindUi() {
     }
   });
   el.colorPickerOverlay.addEventListener('keydown', function (event) {
-    if (event.key === 'Enter') {
-      confirmColorPicker();
-      event.preventDefault();
-    } else if (event.key === 'Escape') {
-      cancelColorPicker();
+    const handled = handleColorPickerKey((event.key || '').toLowerCase());
+    if (handled) {
       event.preventDefault();
     }
   });
@@ -736,6 +755,37 @@ function bindPress(element, handler) {
     }
     if (element && typeof element.focus === 'function') {
       element.focus();
+    }
+    handler(event);
+  }, { passive: false });
+}
+
+function bindPressNoFocus(element, handler) {
+  if (!element || typeof handler !== 'function') {
+    return;
+  }
+
+  if (window.CardTableTouch && typeof window.CardTableTouch.installTouchClickBridge === 'function') {
+    window.CardTableTouch.installTouchClickBridge(element, function (event) {
+      handler(event);
+    }, {
+      suppressMs: touchBridgeSuppressMs,
+      preventDefaultOnTouch: true
+    });
+    return;
+  }
+
+  element.addEventListener('click', function (event) {
+    handler(event);
+  });
+
+  element.addEventListener('touchend', function (event) {
+    if (!event.changedTouches || !event.changedTouches.length) {
+      return;
+    }
+
+    if (event.cancelable) {
+      event.preventDefault();
     }
     handler(event);
   }, { passive: false });
@@ -984,6 +1034,8 @@ function handleGameKeys(event) {
     handled = true;
   } else if (appState.helpOpen) {
     handled = true;
+  } else if (isColorPickerOpen()) {
+    handled = handleColorPickerKey(key);
   } else if (key === 'arrowleft') {
     if (appState.hand.length) {
       appState.handIndex = Math.max(0, appState.handIndex - 1);
@@ -1073,6 +1125,107 @@ function handleGameKeys(event) {
       srSpeak(message, 'assertive', { canInterruptLock: true });
     }
   }
+}
+
+function isColorPickerOpen() {
+  return !!(el.colorPickerOverlay && !el.colorPickerOverlay.classList.contains('hidden'));
+}
+
+function normalizeWildColor(color) {
+  return WILD_PICKER_COLORS.indexOf(color) !== -1 ? color : 'red';
+}
+
+function updateColorPickerUi() {
+  const activeColor = normalizeWildColor(appState.pendingWildColor);
+  appState.pendingWildColor = activeColor;
+
+  if (el.colorPickerSelection) {
+    el.colorPickerSelection.textContent = 'Selected color: ' + capitalizeWord(activeColor);
+  }
+
+  if (!el.colorPickerOptions) {
+    return;
+  }
+
+  const colorButtons = el.colorPickerOptions.querySelectorAll('[data-wild-color]');
+  colorButtons.forEach(function (button) {
+    const color = button.getAttribute('data-wild-color');
+    const selected = color === activeColor;
+    button.setAttribute('aria-checked', selected ? 'true' : 'false');
+    button.classList.toggle('selected', selected);
+  });
+}
+
+function setPendingWildColor(color, options) {
+  if (!isColorPickerOpen()) {
+    return false;
+  }
+
+  const nextColor = normalizeWildColor(color);
+  if (nextColor === appState.pendingWildColor) {
+    return true;
+  }
+
+  appState.pendingWildColor = nextColor;
+  updateColorPickerUi();
+  if (options && options.announce) {
+    srSpeak(capitalizeWord(nextColor) + ' selected', 'assertive', { canInterruptLock: true });
+  }
+  return true;
+}
+
+function cyclePendingWildColor(step) {
+  const currentIndex = WILD_PICKER_COLORS.indexOf(normalizeWildColor(appState.pendingWildColor));
+  const nextIndex = (currentIndex + step + WILD_PICKER_COLORS.length) % WILD_PICKER_COLORS.length;
+  setPendingWildColor(WILD_PICKER_COLORS[nextIndex], { announce: true });
+}
+
+function handleColorPickerKey(key) {
+  if (!isColorPickerOpen()) {
+    return false;
+  }
+
+  if (key === 'escape') {
+    cancelColorPicker();
+    return true;
+  }
+
+  if (key === 'enter' || key === ' ') {
+    confirmColorPicker();
+    return true;
+  }
+
+  if (key === 'arrowleft' || key === 'arrowup') {
+    cyclePendingWildColor(-1);
+    return true;
+  }
+
+  if (key === 'arrowright' || key === 'arrowdown') {
+    cyclePendingWildColor(1);
+    return true;
+  }
+
+  if (key === 'r') {
+    setPendingWildColor('red', { announce: true });
+    return true;
+  }
+
+  if (key === 'y') {
+    setPendingWildColor('yellow', { announce: true });
+    return true;
+  }
+
+  if (key === 'g') {
+    setPendingWildColor('green', { announce: true });
+    return true;
+  }
+
+  if (key === 'b') {
+    setPendingWildColor('blue', { announce: true });
+    return true;
+  }
+
+  return false;
 }
 
 function emitDrawCard() {
@@ -1273,53 +1426,28 @@ function emitPlayCard(card) {
 
 function openColorPicker(card) {
   appState.pendingWildCard = card;
-  appState.colorPickerReturnFocusEl = document.activeElement && typeof document.activeElement.focus === 'function'
-    ? document.activeElement
-    : null;
-  const radios = el.colorPickerFieldset.querySelectorAll('input[type="radio"]');
-  radios.forEach(function (radio) {
-    radio.checked = radio.value === 'red';
-  });
+  appState.pendingWildColor = 'red';
+  updateColorPickerUi();
   el.colorPickerOverlay.classList.remove('hidden');
-  if (radios.length) {
-    radios[0].focus();
-  }
-  srSpeak('Choose a color for your Wild card', 'assertive', { canInterruptLock: true });
+  srSpeak('Choose a color for your Wild card. Use left and right arrows or R, Y, G, B. Press Enter to confirm.', 'assertive', { canInterruptLock: true });
 }
 
-function closeColorPicker(restoreFocus) {
+function closeColorPicker() {
   appState.pendingWildCard = null;
+  appState.pendingWildColor = 'red';
   el.colorPickerOverlay.classList.add('hidden');
-
-  const target = appState.colorPickerReturnFocusEl;
-  appState.colorPickerReturnFocusEl = null;
-
-  if (restoreFocus === false) {
-    return;
-  }
-
-  if (target && typeof target.focus === 'function' && document.contains(target)) {
-    target.focus();
-  }
 }
 
 function confirmColorPicker() {
   const card = appState.pendingWildCard;
   if (typeof card !== 'number') {
-    closeColorPicker(false);
+    closeColorPicker();
     return;
   }
 
-  const selected = el.colorPickerFieldset.querySelector('input[type="radio"]:checked');
-  const color = selected ? selected.value : 'red';
+  const color = normalizeWildColor(appState.pendingWildColor);
   const cardDescription = describeCardForSpeech(card, color);
-  closeColorPicker(false);
-
-  if (appState.currentTable && appState.gameStatus === 'in_game') {
-    focusBoardForA11y({
-      announceOnFocus: true
-    });
-  }
+  closeColorPicker();
 
   srSpeak('You play ' + cardDescription + '.', 'assertive', { canInterruptLock: true });
   submitPlayCard(card, color);
@@ -2298,12 +2426,23 @@ socket.on('loginResult', function (payload) {
   appState.loggedIn = true;
   appState.accountEmail = payload.email || '';
   appState.playerName = payload.name;
-  appState.selectedGameType = null;
-  appState.selectedGameName = '';
-  appState.currentTable = null;
-  appState.selectedLobbyIndex = 0;
-  appState.lobbyTables = [];
-  showGamePicker();
+
+  // login/resumeLogin reclaim any seat the account still holds server-side
+  // (reclaimSeatAfterReconnect) and emit tableState for it before this
+  // loginResult arrives. If that happened, stay on the table instead of
+  // wiping appState.currentTable and forcing the game picker - otherwise a
+  // plain disconnect/reconnect (e.g. a dropped connection right after a
+  // game) silently strands the player's view on the picker while the server
+  // still has them seated, with no way back to the table or its Leave button.
+  if (appState.currentTable) {
+    render();
+  } else {
+    appState.selectedGameType = null;
+    appState.selectedGameName = '';
+    appState.selectedLobbyIndex = 0;
+    appState.lobbyTables = [];
+    showGamePicker();
+  }
 
   try {
     if (payload.email) {
