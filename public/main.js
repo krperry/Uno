@@ -2996,7 +2996,7 @@ socket.on('roundSummary', function (summary) {
     title: 'Round ' + roundNumber + ' winner',
     message: msg,
     tone: 'winner',
-    duration: 3000,
+    duration: 6000,
     kind: 'roundSummary'
   });
   setTableStatus(headline, 'success');
