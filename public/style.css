@@ -11,7 +11,7 @@ html, body {
 }
 
 .app-shell {
-  max-width: 1180px;
+  max-width: 1420px;
   margin: 0 auto;
   padding: 20px;
 }
@@ -245,12 +245,7 @@ button:disabled {
   padding: 10px;
   border-radius: 10px;
   background: #10ac84;
-  width: max-content;
-  min-width: 100%;
-}
-
-#game-panel {
-  overflow-x: auto;
+  width: 100%;
 }
 
 .play-history-panel {
@@ -295,14 +290,15 @@ canvas {
   margin: 0;
   display: block;
   background-color: #10ac84;
-  max-width: 100%;
+  width: 100%;
+  max-width: 1000px;
   min-width: 0;
   height: auto;
   touch-action: none;
   flex: 1 1 auto;
 }
 
-@media (max-width: 1180px) {
+@media (max-width: 1380px) {
   .game-board-layout {
     flex-direction: column;
   }
