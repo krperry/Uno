@@ -237,13 +237,71 @@ button:disabled {
   color: #325554;
 }
 
+.game-board-layout {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+}
+
+.play-history-panel {
+  width: 280px;
+  flex: 0 0 280px;
+  margin-top: 10px;
+  padding: 10px;
+  border-radius: 8px;
+  background: #ecf6f4;
+  border: 1px solid #b7d2cc;
+}
+
+.play-history-panel h3 {
+  margin: 0 0 10px;
+  font-size: 16px;
+  color: #1d4342;
+}
+
+.play-history-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  min-height: 170px;
+}
+
+.play-history-list li {
+  min-height: 32px;
+  padding: 6px 8px;
+  margin-bottom: 4px;
+  border-radius: 6px;
+  background: #ffffff;
+  border: 1px solid #d5e6e2;
+  font-size: 14px;
+  line-height: 1.3;
+  color: #244947;
+}
+
+.play-history-list li:last-child {
+  margin-bottom: 0;
+}
+
 canvas {
-  margin: 10px auto 0;
+  margin: 10px 0 0;
   display: block;
   background-color: #10ac84;
   max-width: 100%;
   height: auto;
   touch-action: none;
+  flex: 1 1 auto;
+}
+
+@media (max-width: 1180px) {
+  .game-board-layout {
+    flex-direction: column;
+  }
+
+  .play-history-panel {
+    width: 100%;
+    flex: 1 1 auto;
+    margin-top: 0;
+  }
 }
 
 .hint {

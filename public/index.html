@@ -115,16 +115,22 @@
         </div>
 
         <div id="game-panel" class="hidden">
-          <canvas
-            id="canvas"
-            width="1000"
-            height="600"
-            tabindex="0"
-            role="application"
-            aria-roledescription="Lumo game board"
-            aria-label="Lumo game board"
-            aria-describedby="game-help"
-          ></canvas>
+          <div class="game-board-layout">
+            <canvas
+              id="canvas"
+              width="1000"
+              height="600"
+              tabindex="0"
+              role="application"
+              aria-roledescription="Lumo game board"
+              aria-label="Lumo game board"
+              aria-describedby="game-help"
+            ></canvas>
+            <aside class="play-history-panel" aria-label="Play history">
+              <h3>Play History</h3>
+              <ol id="play-history-list" class="play-history-list"></ol>
+            </aside>
+          </div>
             <div id="stack-controls" class="stack-controls hidden" aria-live="polite">
               <p id="stack-status"></p>
               <button id="accept-stack-btn" type="button">Take penalty</button>

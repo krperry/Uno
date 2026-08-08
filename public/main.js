@@ -16,6 +16,8 @@ const GAME_CATALOG = {
   cribbage: { type: 'cribbage', name: 'Cribbage', playable: false, description: 'Cribbage is not implemented yet.' }
 };
 
+const PLAY_HISTORY_MAX_LINES = 5;
+
 const WILD_PICKER_COLORS = ['red', 'yellow', 'green', 'blue'];
 
 // Lumo card artwork: one SVG file per card in public/images/lumo/cards (see
@@ -119,6 +121,7 @@ const appState = {
   rulesOpen: false,
   rulesReturnFocusEl: null,
   pendingRoundDealAnnouncement: false,
+  playHistory: [],
   roundResultMessage: '',
   speechLockUntil: 0,
   lastBoardFocusAt: 0,
@@ -197,7 +200,8 @@ const el = {
   allowWildDrawFourStacking: document.getElementById('allow-wild-draw-four-stacking'),
   stackControls: document.getElementById('stack-controls'),
   stackStatus: document.getElementById('stack-status'),
-  acceptStackBtn: document.getElementById('accept-stack-btn')
+  acceptStackBtn: document.getElementById('accept-stack-btn'),
+  playHistoryList: document.getElementById('play-history-list')
 };
 
 function setAuthStatus(message, tone) {
@@ -229,6 +233,93 @@ function setRoundResult(message) {
   }
 
   el.roundResult.textContent = appState.roundResultMessage;
+}
+
+function renderPlayHistory() {
+  if (!el.playHistoryList) {
+    return;
+  }
+
+  el.playHistoryList.innerHTML = '';
+  const start = Math.max(0, appState.playHistory.length - PLAY_HISTORY_MAX_LINES);
+  const visible = appState.playHistory.slice(start);
+  for (let i = 0; i < PLAY_HISTORY_MAX_LINES; i++) {
+    const li = document.createElement('li');
+    li.textContent = visible[i] || '';
+    el.playHistoryList.appendChild(li);
+  }
+}
+
+function clearPlayHistory() {
+  appState.playHistory = [];
+  renderPlayHistory();
+}
+
+function pushPlayHistory(line) {
+  if (!line || typeof line !== 'string') {
+    return;
+  }
+
+  appState.playHistory.push(line.trim());
+  while (appState.playHistory.length > PLAY_HISTORY_MAX_LINES) {
+    appState.playHistory.shift();
+  }
+  renderPlayHistory();
+}
+
+function drawCountText(count) {
+  if (count === 1) {
+    return 'a card';
+  }
+  if (count === 2) {
+    return 'two cards';
+  }
+  if (count === 4) {
+    return 'four cards';
+  }
+  return count + ' cards';
+}
+
+function buildPlayHistoryLine(payload) {
+  if (!payload || !payload.actorId) {
+    return '';
+  }
+
+  const actorName = payload.actorName || 'A player';
+  const playedCard = payload.playedCard || '';
+  const draw = payload.draw && payload.draw.count > 0 ? payload.draw : null;
+
+  if (payload.action === 'play' && playedCard) {
+    let line = actorName + ' played ' + playedCard;
+
+    if (draw && draw.playerId && draw.playerId !== payload.actorId) {
+      line += ' and ' + (draw.playerName || 'another player') + ' drew ' + drawCountText(draw.count);
+    }
+
+    return line;
+  }
+
+  if (payload.action === 'give_resolve') {
+    return actorName + ' gave a card to ' + (payload.nextPlayerName || 'the next player');
+  }
+
+  if (payload.action === 'draw_pass' && draw) {
+    return actorName + ' drew a card and turn passed to ' + (payload.nextPlayerName || 'the next player');
+  }
+
+  if (payload.action === 'stack_resolve' || payload.action === 'give_resolve') {
+    const message = payload.message || payload.stackMessage || '';
+    if (!message) {
+      return '';
+    }
+
+    // Hide private card identities if present in per-player messages.
+    return message
+      .replace(/\bpass(?:es|ed)?\s+[^.]+?\s+to\s+/i, 'gave a card to ')
+      .replace(/\bYou\s+pass\s+[^.]+\./i, actorName + ' gave a card.');
+  }
+
+  return '';
 }
 
 function normalizeDirection(direction) {
@@ -527,6 +618,7 @@ function resetLoggedInState() {
   appState.turnIndicatorText = '';
   appState.suppressTurnAnnouncementForPlayerId = null;
   appState.pendingRoundDealAnnouncement = false;
+  appState.playHistory = [];
   appState.roundResultMessage = '';
 }
 
@@ -1761,6 +1853,7 @@ function render() {
   renderLobbyTables();
   renderPlayerSummary();
   renderStackControls();
+  renderPlayHistory();
 }
 
 function renderLobbyTables() {
@@ -2538,6 +2631,7 @@ socket.on('tableState', function (payload) {
     appState.lastAnnouncedTurnPlayerId = null;
     appState.handBeforeDraw = null;
     appState.pendingRoundDealAnnouncement = false;
+    clearPlayHistory();
     closeAnnouncementOverlay(false);
     render();
     return;
@@ -2564,6 +2658,7 @@ socket.on('tableState', function (payload) {
     appState.discardChosenColor = null;
     appState.pendingDrawCard = null;
     appState.pendingRoundDealAnnouncement = false;
+    clearPlayHistory();
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     if (!appState.tableStatusMessage || appState.tableStatusTone !== 'success') {
       setTableStatus('Waiting for the host to start the next game.', 'info');
@@ -2581,6 +2676,7 @@ socket.on('tableState', function (payload) {
   render();
 
   if (enteredInGame) {
+    clearPlayHistory();
     window.requestAnimationFrame(function () {
       focusBoardForA11y({
         announceOnFocus: true
@@ -2662,6 +2758,10 @@ socket.on('sendCard', function (payload) {
 
 socket.on('turnTransition', function (payload) {
   const message = buildTurnTransitionMessage(payload);
+  const historyLine = buildPlayHistoryLine(payload);
+  if (historyLine) {
+    pushPlayHistory(historyLine);
+  }
   if (!message) {
     return;
   }
