@@ -245,6 +245,12 @@ button:disabled {
   padding: 10px;
   border-radius: 10px;
   background: #10ac84;
+  width: max-content;
+  min-width: 100%;
+}
+
+#game-panel {
+  overflow-x: auto;
 }
 
 .play-history-panel {
@@ -290,6 +296,7 @@ canvas {
   display: block;
   background-color: #10ac84;
   max-width: 100%;
+  min-width: 0;
   height: auto;
   touch-action: none;
   flex: 1 1 auto;
